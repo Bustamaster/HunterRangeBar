@@ -3,6 +3,70 @@ local FAR_RANGE = 100
 local UPDATE_INTERVAL = 0.1
 local ANIMATION_SPEED = 6
 
+local strings = {
+    cs = {
+        title = "Hunter Range Bar - nastavení", width = "Délka (šířka pruhu)",
+        height = "Výška (tloušťka pruhu)", x = "Pozice X (od středu obrazovky)",
+        y = "Pozice Y (od středu obrazovky)", lock = "Zamknout pozici (nejde přetahovat myší)",
+        reset = "Výchozí hodnoty", close = "Zavřít", language = "Jazyk",
+        noTarget = "Bez cíle", melee = "NA BLÍZKO", dead = "MRTVÁ ZÓNA",
+        inRange = "V DOSAHU", outOfRange = "MIMO DOSAHU", unknown = "DOSAH NEZJIŠTĚN",
+        missing = "Chybí %.1f yd", missingEstimate = "Chybí ~%.0f yd",
+        pet = "Pet útočí na tento cíl (tvůj target se nezmění)",
+        marker = "Levé: lebka\nCtrl+levé: další volná značka (kříž, čtverec, měsíc…)\nPravé: zavřít řádek\nShift+levé: zrušit značku",
+        dice = "Náhodně rozdat značky: lebka, kříž, čtverec, …\n(každý nepřítel v seznamu jednu, nejvýš 8)",
+        unavailable = "Cil neni dostupny pro kliknuti. Zapni nepratelske nameplaty (V) a priprav seznam pred bojem.",
+        locked = "zamceno", unlocked = "odemceno", positionReset = "Pozice Hunter Range Bar byla obnovena.",
+        stackCleared = "Sloupec pouzitych schopnosti byl vycisten.",
+        commands = "Prikazy: /hrm, /hrb lock, /hrb unlock, /hrb reset, /hrb debug, /hrb clear, /hrb seznam",
+        listCombat = "Seznam targetu se vycisti po boji.", listClear = "Seznam targetu se vycisti za 0,5 s.",
+        openSettings = "Otevřít nastavení", secureError = "zabezpecene tlacitko cile se nepodarilo vytvorit: ",
+        fontError = "nepodarilo se nacist font Lato-Regular.ttf.",
+        debugSelect = "nejprve vyber target.", debugTarget = "diagnostika targetu ",
+        debugNoApi = "UnitDistanceSquared: API neni dostupne", debugItem = "predmet",
+        debugThreshold = "Hranice %s yd (%s): %s", debugMeleeItems = "Na blizko (predmety 5 yd): ",
+        debugMelee = "Na blizko (%s): %s", debugShort = "Kratky dosah (predmety 10/20 yd): ",
+        debugInteraction = "interakce ",
+    },
+    en = {
+        title = "Hunter Range Bar - Settings", width = "Length (bar width)",
+        height = "Height (bar thickness)", x = "X position (from screen center)",
+        y = "Y position (from screen center)", lock = "Lock position (disable dragging)",
+        reset = "Defaults", close = "Close", language = "Language",
+        noTarget = "No target", melee = "MELEE RANGE", dead = "DEAD ZONE",
+        inRange = "IN RANGE", outOfRange = "OUT OF RANGE", unknown = "RANGE UNKNOWN",
+        missing = "%.1f yd to range", missingEstimate = "~%.0f yd to range",
+        pet = "Send pet to this target (your target stays unchanged)",
+        marker = "Left: skull\nCtrl+left: next available marker (cross, square, moon...)\nRight: close row\nShift+left: clear marker",
+        dice = "Randomly assign markers: skull, cross, square, ...\n(one per listed enemy, up to 8)",
+        unavailable = "Target unavailable. Enable enemy nameplates (V) and prepare the list before combat.",
+        locked = "locked", unlocked = "unlocked", positionReset = "Hunter Range Bar position reset.",
+        stackCleared = "Used abilities column cleared.",
+        commands = "Commands: /hrm, /hrb lock, /hrb unlock, /hrb reset, /hrb debug, /hrb clear, /hrb list",
+        listCombat = "Target list will be cleared after combat.", listClear = "Target list will be cleared in 0.5 seconds.",
+        openSettings = "Open settings", secureError = "could not create secure target button: ",
+        fontError = "could not load Lato-Regular.ttf.",
+        debugSelect = "select a target first.", debugTarget = "target diagnostics ",
+        debugNoApi = "UnitDistanceSquared: API unavailable", debugItem = "item",
+        debugThreshold = "Threshold %s yd (%s): %s", debugMeleeItems = "Melee (5 yd items): ",
+        debugMelee = "Melee (%s): %s", debugShort = "Short range (10/20 yd items): ",
+        debugInteraction = "interaction ",
+    },
+}
+
+local function L(key)
+    local language = HunterRangeBarDB and HunterRangeBarDB.language
+    return strings[language == "en" and "en" or "cs"][key]
+end
+
+local FONT_PATH = "Interface\\AddOns\\HunterRangeBar\\Lato-Regular.ttf"
+local function applyAddonFont(fontString)
+    local _, size, flags = fontString:GetFont()
+    if not fontString:SetFont(FONT_PATH, size or 12, flags or "") then
+        print("HunterRangeBar: " .. L("fontError"))
+    end
+end
+
 -- Real range thresholds available for hostile targets (item IDs taken from LibRangeCheck-3.0, Era/Forever lists).
 local HOSTILE_THRESHOLDS = {
     { range = 40, spellID = 3044, spellName = "Arcane Shot" },
@@ -105,10 +169,12 @@ if USE_SWING_STYLE and hasAtlas("ui-swingtimerbar-textshadow-left") then
 end
 
 local nameLabel = statusBar:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+applyAddonFont(nameLabel)
 nameLabel:SetPoint("LEFT", statusBar, "LEFT", 10, 0)
 nameLabel:SetJustifyH("LEFT")
 
 local infoLabel = statusBar:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+applyAddonFont(infoLabel)
 infoLabel:SetPoint("RIGHT", statusBar, "RIGHT", -10, 0)
 infoLabel:SetJustifyH("RIGHT")
 
@@ -823,6 +889,7 @@ end
 local function createSettingRow(parent, caption, minValue, maxValue, top, onChange)
     local row = {}
     row.label = parent:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    applyAddonFont(row.label)
     row.label:SetPoint("TOPLEFT", parent, "TOPLEFT", 20, top)
     row.label:SetText(caption)
 
@@ -887,7 +954,7 @@ end
 
 local function createSettingsFrame()
     local panel, templated = createFrameSafe("Frame", UIParent, "BasicFrameTemplateWithInset")
-    panel:SetSize(340, 330)
+    panel:SetSize(340, 400)
     panel:SetPoint("CENTER", UIParent, "CENTER", 0, 120)
     panel:SetFrameStrata("DIALOG")
     panel:SetClampedToScreen(true)
@@ -911,8 +978,9 @@ local function createSettingsFrame()
     end
 
     local title = panel:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+    applyAddonFont(title)
     title:SetPoint("TOP", panel, "TOP", 0, -6)
-    title:SetText("Hunter Range Bar – nastavení")
+    panel.title = title
 
     local function db()
         HunterRangeBarDB = HunterRangeBarDB or {}
@@ -922,21 +990,21 @@ local function createSettingsFrame()
     local halfWidth = math.floor((UIParent:GetWidth() or 2000) / 2)
     local halfHeight = math.floor((UIParent:GetHeight() or 1200) / 2)
 
-    panel.widthRow = createSettingRow(panel, "Délka (šířka pruhu)", MIN_WIDTH, MAX_WIDTH, -36, function(value)
+    panel.widthRow = createSettingRow(panel, L("width"), MIN_WIDTH, MAX_WIDTH, -36, function(value)
         db().width = value
         db().height = db().height or math.floor(frame:GetHeight() + 0.5)
         applySize()
     end)
-    panel.heightRow = createSettingRow(panel, "Výška (tloušťka pruhu)", MIN_HEIGHT, MAX_HEIGHT, -86, function(value)
+    panel.heightRow = createSettingRow(panel, L("height"), MIN_HEIGHT, MAX_HEIGHT, -86, function(value)
         db().height = value
         db().width = db().width or math.floor(frame:GetWidth() + 0.5)
         applySize()
     end)
-    panel.xRow = createSettingRow(panel, "Pozice X (od středu obrazovky)", -halfWidth, halfWidth, -136, function(value)
+    panel.xRow = createSettingRow(panel, L("x"), -halfWidth, halfWidth, -136, function(value)
         db().x = value
         restorePosition()
     end)
-    panel.yRow = createSettingRow(panel, "Pozice Y (od středu obrazovky)", -halfHeight, halfHeight, -186, function(value)
+    panel.yRow = createSettingRow(panel, L("y"), -halfHeight, halfHeight, -186, function(value)
         db().y = value
         restorePosition()
     end)
@@ -949,8 +1017,9 @@ local function createSettingsFrame()
     end
     lockCheck:SetPoint("TOPLEFT", panel, "TOPLEFT", 16, -236)
     local lockText = panel:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    applyAddonFont(lockText)
     lockText:SetPoint("LEFT", lockCheck, "RIGHT", 4, 0)
-    lockText:SetText("Zamknout pozici (nejde přetahovat myší)")
+    panel.lockText = lockText
     lockCheck:SetScript("OnClick", function(self)
         db().locked = self:GetChecked() and true or false
     end)
@@ -959,7 +1028,8 @@ local function createSettingsFrame()
     local resetButton = createFrameSafe("Button", panel, "UIPanelButtonTemplate")
     resetButton:SetSize(140, 24)
     resetButton:SetPoint("BOTTOMLEFT", panel, "BOTTOMLEFT", 20, 20)
-    resetButton:SetText("Výchozí hodnoty")
+    applyAddonFont(resetButton:GetFontString())
+    panel.resetButton = resetButton
     resetButton:SetScript("OnClick", function()
         local saved = db()
         saved.width, saved.height, saved.x, saved.y = nil, nil, 0, -180
@@ -971,8 +1041,30 @@ local function createSettingsFrame()
     local closeButton = createFrameSafe("Button", panel, "UIPanelButtonTemplate")
     closeButton:SetSize(100, 24)
     closeButton:SetPoint("BOTTOMRIGHT", panel, "BOTTOMRIGHT", -20, 20)
-    closeButton:SetText("Zavřít")
+    applyAddonFont(closeButton:GetFontString())
+    panel.closeButton = closeButton
     closeButton:SetScript("OnClick", function() panel:Hide() end)
+
+    local languageLabel = panel:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    applyAddonFont(languageLabel)
+    languageLabel:SetPoint("TOPLEFT", panel, "TOPLEFT", 20, -274)
+    panel.languageLabel = languageLabel
+
+    local dropdown = CreateFrame("DropdownButton", nil, panel, "WowStyle1DropdownTemplate")
+    dropdown:SetSize(160, 24)
+    dropdown:SetPoint("LEFT", languageLabel, "RIGHT", 12, 0)
+    dropdown:SetupMenu(function(_, root)
+        local function selected(value)
+            return (db().language == "en" and "en" or "cs") == value
+        end
+        local function selectLanguage(value)
+            db().language = value
+            refreshSettings()
+        end
+        root:CreateRadio("Cestina", selected, selectLanguage, "cs")
+        root:CreateRadio("English", selected, selectLanguage, "en")
+    end)
+    panel.languageDropdown = dropdown
 
     panel:SetScript("OnShow", function() refreshSettings() end)
     return panel
@@ -983,6 +1075,15 @@ refreshSettings = function()
         return
     end
     local db = HunterRangeBarDB or {}
+    settingsFrame.title:SetText(L("title"))
+    settingsFrame.widthRow.label:SetText(L("width"))
+    settingsFrame.heightRow.label:SetText(L("height"))
+    settingsFrame.xRow.label:SetText(L("x"))
+    settingsFrame.yRow.label:SetText(L("y"))
+    settingsFrame.lockText:SetText(L("lock"))
+    settingsFrame.resetButton:SetText(L("reset"))
+    settingsFrame.closeButton:SetText(L("close"))
+    settingsFrame.languageLabel:SetText(L("language"))
     local width, height = frame:GetSize()
     settingsFrame.widthRow.setValue(db.width or width)
     settingsFrame.heightRow.setValue(db.height or height)
@@ -1126,16 +1227,16 @@ end
 
 local function reportRangeDebug()
     if not UnitExists("target") then
-        print("Hunter Range Bar: nejprve vyber target.")
+        print("Hunter Range Bar: " .. L("debugSelect"))
         return
     end
 
-    print("Hunter Range Bar: diagnostika targetu " .. (UnitName("target") or "?"))
+    print("Hunter Range Bar: " .. L("debugTarget") .. (UnitName("target") or "?"))
     if type(UnitDistanceSquared) == "function" then
         local distanceSquared, checked = UnitDistanceSquared("target")
         print("UnitDistanceSquared: " .. tostring(distanceSquared) .. ", checked=" .. tostring(checked))
     else
-        print("UnitDistanceSquared: API není dostupné")
+        print(L("debugNoApi"))
     end
 
     local hostileTarget = UnitCanAttack and UnitCanAttack("player", "target")
@@ -1152,14 +1253,14 @@ local function reportRangeDebug()
             else
                 result = checkFallbackRange(threshold)
             end
-            local name = threshold.spellName or "předmět"
-            print(string.format("Hranice %s yd (%s): %s", threshold.range, name, tostring(result)))
+            local name = threshold.spellName or L("debugItem")
+            print(string.format(L("debugThreshold"), threshold.range, name, tostring(result)))
         end
-        print("Na blízko (předměty 5 yd): " .. tostring(checkItemRange(MELEE_ITEMS)))
+        print(L("debugMeleeItems") .. tostring(checkItemRange(MELEE_ITEMS)))
         for _, spell in ipairs(MELEE_SPELLS) do
-            print(string.format("Na blízko (%s): %s", spell.spellName, tostring(checkFallbackRange(spell))))
+            print(string.format(L("debugMelee"), spell.spellName, tostring(checkFallbackRange(spell))))
         end
-        print("Krátký dosah (předměty 10/20 yd): " .. tostring(checkItemRange(SHORT_RANGE_ITEMS)))
+        print(L("debugShort") .. tostring(checkItemRange(SHORT_RANGE_ITEMS)))
     end
 
     for _, check in ipairs(FALLBACK_CHECKS) do
@@ -1168,7 +1269,7 @@ local function reportRangeDebug()
             or (not hostileTarget and check.friendlyOnly)
         then
             local result = checkFallbackRange(check)
-            local name = check.spellName or ("interakce " .. check.interactIndex)
+            local name = check.spellName or (L("debugInteraction") .. check.interactIndex)
             print(string.format("%s (%s yd): %s", name, check.range, tostring(result)))
         end
     end
@@ -1292,7 +1393,7 @@ local function computeBar(elapsed)
         resetEstimator()
         frame.hasTarget = false
         setTargetProgress(0)
-        label:SetText("Bez cíle")
+        label:SetText(L("noTarget"))
         return
     end
 
@@ -1307,19 +1408,19 @@ local function computeBar(elapsed)
         setTargetProgress(progressForDistance(distance))
         if hostileTarget and distance <= MELEE_RANGE then
             setZone("melee")
-            label:SetText(string.format("%s  |  %.1f yd  |  NA BLÍZKO", targetName, distance))
+            label:SetText(string.format("%s  |  %.1f yd  |  %s", targetName, distance, L("melee")))
         elseif hostileTarget and distance < DEAD_ZONE_RANGE then
             setZone("dead")
-            label:SetText(string.format("%s  |  %.1f yd  |  MRTVÁ ZÓNA", targetName, distance))
+            label:SetText(string.format("%s  |  %.1f yd  |  %s", targetName, distance, L("dead")))
         elseif distance <= MAX_RANGE then
             setZone("ranged")
-            label:SetText(string.format("%s  |  %.1f yd  |  V DOSAHU", targetName, distance))
+            label:SetText(string.format("%s  |  %.1f yd  |  %s", targetName, distance, L("inRange")))
         else
             label:SetText(string.format(
-                "%s  |  %.1f yd  |  Chybí %.1f yd",
+                "%s  |  %.1f yd  |  %s",
                 targetName,
                 distance,
-                distance - MAX_RANGE
+                string.format(L("missing"), distance - MAX_RANGE)
             ))
         end
         return
@@ -1331,13 +1432,13 @@ local function computeBar(elapsed)
             resetEstimator()
             setTargetProgress(1)
             setZone("melee")
-            label:SetText(string.format("%s  |  <=%d yd  |  NA BLÍZKO", targetName, MELEE_RANGE))
+            label:SetText(string.format("%s  |  <=%d yd  |  %s", targetName, MELEE_RANGE, L("melee")))
             return
         elseif closeZone == "dead" then
             resetEstimator()
             setTargetProgress(1)
             setZone("dead")
-            label:SetText(string.format("%s  |  <%d yd  |  MRTVÁ ZÓNA", targetName, DEAD_ZONE_RANGE))
+            label:SetText(string.format("%s  |  <%d yd  |  %s", targetName, DEAD_ZONE_RANGE, L("dead")))
             return
         end
 
@@ -1345,24 +1446,24 @@ local function computeBar(elapsed)
         if lowerBound == nil then
             resetEstimator()
             setTargetProgress(0)
-            label:SetText(string.format("%s  |  ? yd  |  DOSAH NEZJIŠTĚN", targetName))
+            label:SetText(string.format("%s  |  ? yd  |  %s", targetName, L("unknown")))
         elseif upperBound ~= nil and upperBound <= MAX_RANGE then
             resetEstimator()
             setTargetProgress(1)
             setZone("ranged")
-            label:SetText(string.format("%s  |  <=%.0f yd  |  V DOSAHU", targetName, MAX_RANGE))
+            label:SetText(string.format("%s  |  <=%.0f yd  |  %s", targetName, MAX_RANGE, L("inRange")))
         elseif upperBound == nil then
             resetEstimator()
             setTargetProgress(0)
-            label:SetText(string.format("%s  |  >%.0f yd  |  MIMO DOSAHU", targetName, lowerBound))
+            label:SetText(string.format("%s  |  >%.0f yd  |  %s", targetName, lowerBound, L("outOfRange")))
         else
             local estimate = estimateDistanceInBand(lowerBound, upperBound, elapsed)
             setTargetProgress(progressForDistance(estimate))
             label:SetText(string.format(
-                "%s  |  ~%.0f yd  |  Chybí ~%.0f yd",
+                "%s  |  ~%.0f yd  |  %s",
                 targetName,
                 estimate,
-                estimate - MAX_RANGE
+                string.format(L("missingEstimate"), estimate - MAX_RANGE)
             ))
         end
         return
@@ -1529,6 +1630,7 @@ frame:SetScript("OnUpdate", function(self, elapsed)
 end)
 
 SLASH_HUNTERRANGEBAR1 = "/hrb"
+SLASH_HUNTERRANGEBAR2 = "/hrm"
 SlashCmdList.HUNTERRANGEBAR = function(message)
     local command = strtrim and strtrim(string.lower(message or "")) or string.lower(message or "")
     if command == "" or command == "config" or command == "nastaveni" then
@@ -1540,7 +1642,7 @@ SlashCmdList.HUNTERRANGEBAR = function(message)
         else
             HunterRangeBarDB.locked = not HunterRangeBarDB.locked
         end
-        print("Hunter Range Bar: " .. (HunterRangeBarDB.locked and "zamčeno" or "odemčeno"))
+        print("Hunter Range Bar: " .. L(HunterRangeBarDB.locked and "locked" or "unlocked"))
         refreshSettings()
     elseif command == "reset" then
         HunterRangeBarDB = HunterRangeBarDB or {}
@@ -1548,14 +1650,14 @@ SlashCmdList.HUNTERRANGEBAR = function(message)
         HunterRangeBarDB.y = -180
         restorePosition()
         refreshSettings()
-        print("Pozice Hunter Range Bar byla obnovena.")
+        print(L("positionReset"))
     elseif command == "debug" then
         reportRangeDebug()
     elseif command == "clear" then
         clearStack()
-        print("Sloupec použitých schopností byl vyčištěn.")
+        print(L("stackCleared"))
     else
-        print("Příkazy: /hrb (nastavení), /hrb lock, /hrb unlock, /hrb reset, /hrb debug, /hrb clear, /hrb seznam")
+        print(L("commands"))
     end
 end
 
@@ -1569,7 +1671,10 @@ if Settings and type(Settings.RegisterCanvasLayoutCategory) == "function" and ty
     local openButton = createFrameSafe("Button", optionsPanel, "UIPanelButtonTemplate")
     openButton:SetSize(180, 24)
     openButton:SetPoint("TOPLEFT", optionsTitle, "BOTTOMLEFT", 0, -12)
-    openButton:SetText("Otevřít nastavení")
+    applyAddonFont(openButton:GetFontString())
+    optionsPanel:SetScript("OnShow", function()
+        openButton:SetText(L("openSettings"))
+    end)
     openButton:SetScript("OnClick", function()
         if HideUIPanel and _G.SettingsPanel then
             HideUIPanel(_G.SettingsPanel)
@@ -1584,11 +1689,9 @@ if Settings and type(Settings.RegisterCanvasLayoutCategory) == "function" and ty
     end)
 end
 
--- Clickable list of every enemy the player targets within 100 yd, stacked upward left of the bar.
--- One row per enemy (by GUID); the row body is the enemy's health bar. No row limit.
--- Left click targets the enemy again (/targetexact by name), right click removes it from the list.
--- Dead enemies and enemies beyond 100 yd disappear at once. Secure buttons cannot be changed in combat:
--- enemies targeted in combat appear as dimmed rows (clickable after combat) and the list closes up after combat.
+-- Clickable list of enemies targeted outside combat, stacked upward left of the bar.
+-- Left click targets by name; right click marks the row for removal.
+-- Secure buttons cannot be changed in combat, so removals are deferred until combat ends.
 do
     local BUTTON_WIDTH, BUTTON_HEIGHT, BUTTON_GAP = 214, 22, 2
     local SIDE = BUTTON_HEIGHT -- pet button (left) and mark button (right) are square
@@ -1599,7 +1702,6 @@ do
     local SKULL, CROSS = 8, 7
     local MARK_ICON_ROOM = 39 + 8 -- space kept free for the Hunter's Mark icon left of the bar
     local ROW = BUTTON_HEIGHT + BUTTON_GAP
-    local FAR_CHECKS = 3 -- consecutive >100 yd checks (0.2 s apart) before an enemy is dropped
     local ARCANE_SHOT_ID = 3044
     local ITEMS_45 = HOSTILE_THRESHOLDS[2].itemIDs
     local ITEMS_100 = HOSTILE_THRESHOLDS[3].itemIDs
@@ -1618,9 +1720,26 @@ do
     list:SetFrameStrata("MEDIUM")
     list:SetPoint("BOTTOMLEFT", UIParent, "BOTTOMLEFT", 0, 0)
 
+    local tooltipFont = CreateFont("HunterRangeBarTooltipFont")
+    tooltipFont:SetFontObject(GameTooltipHeaderText)
+    local _, tooltipSize, tooltipFlags = GameTooltipHeaderText:GetFont()
+    if not tooltipFont:SetFont(FONT_PATH, tooltipSize, tooltipFlags) then
+        print("HunterRangeBar: " .. L("fontError"))
+    end
+    local listTooltip = CreateFrame("GameTooltip", "HunterRangeBarListTooltip", UIParent, "GameTooltipTemplate")
+    listTooltip.textLeft1Font = "HunterRangeBarTooltipFont"
+
+    local function showListTooltip(owner, text)
+        listTooltip:SetOwner(owner, "ANCHOR_TOP")
+        listTooltip:SetText(text)
+        listTooltip.TextLeft1:SetFontObject(tooltipFont)
+        listTooltip:Show()
+    end
+
     local entries = {}
     local layout
     local needsLayout = false
+    local CLOSE_DELAY = 0.5
 
     -- Health colour by remaining health; works with secret values (evaluated by the game).
     local healthCurve
@@ -1669,12 +1788,14 @@ do
 
         -- StatusBar accepts the secret health values of this client; it does not take mouse clicks.
         row.health = CreateFrame("StatusBar", nil, row)
+        row.health:EnableMouse(false)
         row.health:SetAllPoints(row.healthBack)
         row.health:SetStatusBarTexture("Interface\\TargetingFrame\\UI-StatusBar")
         row.health:SetMinMaxValues(0, 1)
         row.health:SetValue(1)
 
         row.over = CreateFrame("Frame", nil, row)
+        row.over:EnableMouse(false)
         row.over:SetAllPoints(row)
         row.over:SetFrameLevel(row.health:GetFrameLevel() + 1)
 
@@ -1712,6 +1833,11 @@ do
         row.targetGlow:SetBlendMode("ADD")
         row.targetGlow:Hide()
 
+        row.closeFlash = row.over:CreateTexture(nil, "OVERLAY", nil, 3)
+        row.closeFlash:SetAllPoints(row)
+        row.closeFlash:SetColorTexture(1, 0.15, 0.1, 1)
+        row.closeFlash:Hide()
+
         row.hover = row.over:CreateTexture(nil, "OVERLAY", nil, 2)
         row.hover:SetAllPoints(row)
         row.hover:SetColorTexture(1, 1, 1, 0.1)
@@ -1723,7 +1849,7 @@ do
     end
 
     -- Small secure button over the pet / mark square of a clickable row.
-    local function addSideButton(row, anchorPoint, tooltip, name)
+    local function addSideButton(row, anchorPoint, tooltipKey, name)
         local ok, button = pcall(CreateFrame, "Button", name, row, "SecureActionButtonTemplate")
         if not ok or not button then
             return nil
@@ -1739,16 +1865,10 @@ do
         highlight:SetAllPoints(button)
         highlight:SetColorTexture(1, 1, 1, 0.25)
         button:SetScript("OnEnter", function(self)
-            if GameTooltip then
-                GameTooltip:SetOwner(self, "ANCHOR_TOP")
-                GameTooltip:SetText(tooltip)
-                GameTooltip:Show()
-            end
+            showListTooltip(self, L(tooltipKey))
         end)
         button:SetScript("OnLeave", function()
-            if GameTooltip then
-                GameTooltip:Hide()
-            end
+            listTooltip:Hide()
         end)
         return button
     end
@@ -1759,6 +1879,7 @@ do
         row:ClearAllPoints()
         row:SetPoint("BOTTOMLEFT", list, "BOTTOMLEFT", 0, (slot - 1) * ROW)
         row:SetAlpha(1)
+        row.closeFlash:SetShown(entry.closingAt ~= nil)
         row:Show()
     end
 
@@ -1770,6 +1891,7 @@ do
             return
         end
         row.entry = nil
+        row.closeFlash:Hide()
         if row.secure and inCombat() then
             row:SetAlpha(0)
         else
@@ -1778,24 +1900,43 @@ do
     end
 
     local function dropEntry(entry)
-        if not entry then
+        if not entry or entry.closingAt then
             return
         end
-        for index, other in ipairs(entries) do
-            if other == entry then
-                table.remove(entries, index)
-                break
-            end
+        entry.closingAt = GetTime()
+        if entry.row then
+            entry.row.closeFlash:SetAlpha(0.65)
+            entry.row.closeFlash:Show()
         end
-        releaseRow(entry)
-        layout()
     end
 
-    -- Right click on a mark button gives the next mark (cross, square, moon, …) that is not in use yet.
+    local function updateClosingRows(now)
+        local removed = false
+        for index = #entries, 1, -1 do
+            local entry = entries[index]
+            if entry.closingAt then
+                local elapsed = now - entry.closingAt
+                if elapsed >= CLOSE_DELAY and not inCombat() then
+                    table.remove(entries, index)
+                    releaseRow(entry)
+                    removed = true
+                elseif entry.row and elapsed >= CLOSE_DELAY then
+                    entry.row.closeFlash:SetAlpha(0.55)
+                elseif entry.row then
+                    entry.row.closeFlash:SetAlpha(0.25 + 0.4 * math.abs(math.cos(elapsed / CLOSE_DELAY * math.pi)))
+                end
+            end
+        end
+        if removed then
+            layout()
+        end
+    end
+
+    -- Ctrl+left click gives the next unused mark (cross, square, moon, …).
     -- The choice runs in a secure snippet so it works in combat too; marks in use are kept as attributes
     -- "used1".."used7" on the protected header and re-read from the game out of combat when readable.
     local POOL_SNIPPET = [[
-        if button ~= "RightButton" or IsShiftKeyDown() then
+        if button ~= "LeftButton" or not IsControlKeyDown() or IsShiftKeyDown() then
             return
         end
         local current = self:GetAttribute("hrb-mark")
@@ -1817,7 +1958,9 @@ do
         end
         owner:SetAttribute("used" .. mark, true)
         self:SetAttribute("hrb-mark", mark)
-        self:SetAttribute("macrotext2", (self:GetAttribute("hrb-pre") or "") .. "/tm " .. mark .. (self:GetAttribute("hrb-post") or ""))
+        if self:GetAttribute("unit") then
+            self:SetAttribute("ctrl-marker1", mark)
+        end
     ]]
     local markPool
     do
@@ -1835,8 +1978,8 @@ do
     end
 
     -- Dice button left of the first row: hands out skull, cross, square, … to the listed enemies in random order.
-    -- A secure snippet shuffles the rows on every click (works in combat too) and writes "/tm !N" into each row's
-    -- mark button as macrotext4; the dice macro then clicks those mark buttons with Button4.
+    -- A secure snippet shuffles the rows on every click (works in combat too) and writes marker4 into each row's
+    -- mark button; the dice macro then clicks those mark buttons with Button4 (secure "raidtarget" action).
     local RANDOM_SNIPPET = [[
         local count = owner:GetAttribute("count") or 0
         local order = newtable()
@@ -1855,7 +1998,9 @@ do
             local mark = 9 - slot
             if markButton then
                 if mark >= 1 then
-                    markButton:SetAttribute("macrotext4", (markButton:GetAttribute("hrb-pre") or "") .. "/tm !" .. mark .. (markButton:GetAttribute("hrb-post") or ""))
+                    local bound = markButton:GetAttribute("unit")
+                    markButton:SetAttribute("type4", bound and "raidtarget" or nil)
+                    markButton:SetAttribute("marker4", bound and mark or nil)
                     if mark <= 7 then
                         markButton:SetAttribute("hrb-mark", mark)
                         owner:SetAttribute("used" .. mark, true)
@@ -1863,7 +2008,8 @@ do
                         markButton:SetAttribute("hrb-mark", nil)
                     end
                 else
-                    markButton:SetAttribute("macrotext4", nil)
+                    markButton:SetAttribute("type4", nil)
+                    markButton:SetAttribute("marker4", nil)
                 end
             end
         end
@@ -1893,16 +2039,10 @@ do
             highlight:SetAllPoints(button)
             highlight:SetColorTexture(1, 1, 1, 0.25)
             button:SetScript("OnEnter", function(self)
-                if GameTooltip then
-                    GameTooltip:SetOwner(self, "ANCHOR_TOP")
-                    GameTooltip:SetText("Náhodně rozdat značky: lebka, kříž, čtverec, …\n(každý nepřítel v seznamu jednu, nejvýš 8)")
-                    GameTooltip:Show()
-                end
+                showListTooltip(self, L("dice"))
             end)
             button:SetScript("OnLeave", function()
-                if GameTooltip then
-                    GameTooltip:Hide()
-                end
+                listTooltip:Hide()
             end)
             if not pcall(SecureHandlerWrapScript, button, "OnClick", markPool, RANDOM_SNIPPET) then
                 diceButton = nil
@@ -1921,23 +2061,36 @@ do
         if buttons[index] then
             return buttons[index]
         end
-        local ok, button = pcall(CreateFrame, "Button", "HunterRangeBarTargetButton" .. index, list, "SecureActionButtonTemplate")
+        local ok, button = pcall(CreateFrame, "Button", nil, list, "SecureActionButtonTemplate")
         if ok and button then
             button.secure = true
         else
             canClick = false
+            print("HunterRangeBar: " .. L("secureError") .. tostring(button))
             button = CreateFrame("Button", nil, list)
         end
         decorate(button)
         if button.secure then
             button:SetAttribute("useOnKeyDown", false)
-            button.petButton = addSideButton(button, "LEFT", "Pet útočí na tento cíl (tvůj target se nezmění)")
+            button.petButton = addSideButton(button, "LEFT", "pet")
+            button.petButton:SetAttribute("type2", "none")
+            button.petButton:SetScript("PostClick", function(_, mouseButton)
+                if mouseButton == "RightButton" then
+                    dropEntry(button.entry)
+                end
+            end)
             button.markButton = addSideButton(button, "RIGHT",
-                "Levé: lebka\nPravé: další volná značka (kříž, čtverec, měsíc…), další klik = další volná\nShift+klik: zrušit značku",
+                "marker",
                 "HRBM" .. index)
+            button.markButton:SetAttribute("type2", "none")
+            button.markButton:SetScript("PostClick", function(_, mouseButton)
+                if mouseButton == "RightButton" then
+                    dropEntry(button.entry)
+                end
+            end)
             -- The dice macro invokes this button as Button4; SecureActionButton resolves
             -- the action type by that suffix, independently from the default mouse buttons.
-            button.markButton:SetAttribute("type4", "macro")
+            button.markButton:SetAttribute("action4", "set")
             button.markButton:RegisterForClicks("LeftButtonUp", "RightButtonUp", "Button4Up")
             wrapMarkButton(button.markButton)
         end
@@ -1945,6 +2098,8 @@ do
         button:SetScript("PostClick", function(self, mouseButton)
             if mouseButton == "RightButton" then
                 dropEntry(self.entry)
+            elseif mouseButton == "LeftButton" and self.entry and not self.entry.clickUnit and not self.entry.targetByName then
+                print(L("unavailable"))
             end
         end)
         buttons[index] = button
@@ -1978,27 +2133,98 @@ do
         return ok and same == true
     end
 
-    -- Pet and mark buttons briefly target the enemy, act and return to the previous target.
-    -- If the enemy already is the target they act directly (attributes can only follow this out of combat).
-    local function setRowMacros(button, entry)
-        local around = "%s"
-        if not matchesGuid("target", entry.guid) then
-            around = "/targetexact " .. entry.name .. "\n%s\n/targetlasttarget"
+    -- Bind to visible unit tokens, not names. Capture the target's nameplate token directly too:
+    -- UnitGUID can be secret in this client, which otherwise leaves the row with no action target.
+    local function findClickUnit(guid)
+        if not guid then
+            return nil
         end
-        button:SetAttribute("type1", "macro")
-        button:SetAttribute("macrotext1", "/targetexact " .. entry.name)
+        for index = 1, 40 do
+            local unit = "nameplate" .. index
+            if matchesGuid(unit, guid) then
+                return unit
+            end
+        end
+        if matchesGuid("focus", guid) then
+            return "focus"
+        end
+    end
+
+    local function getTargetClickUnit()
+        if C_NamePlate and type(C_NamePlate.GetNamePlateForUnit) == "function" then
+            local ok, plate = pcall(C_NamePlate.GetNamePlateForUnit, "target")
+            if ok and plate and type(plate.GetUnit) == "function" then
+                local unitOk, unit = pcall(plate.GetUnit, plate)
+                if unitOk and type(unit) == "string" then
+                    return unit
+                end
+            end
+        end
+        for index = 1, 40 do
+            local unit = "nameplate" .. index
+            local ok, same = pcall(UnitIsUnit, unit, "target")
+            if ok and same then
+                return unit
+            end
+        end
+        local ok, same = pcall(UnitIsUnit, "focus", "target")
+        if ok and same then
+            return "focus"
+        end
+    end
+
+    local function isUsableClickUnit(unit, guid, name)
+        if not unit then
+            return false
+        end
+        if guid then
+            return matchesGuid(unit, guid)
+        end
+        local ok, exists, unitName = pcall(function()
+            return UnitExists(unit), UnitName(unit)
+        end)
+        return ok and exists and type(unitName) == "string" and not isSecret(unitName) and unitName == name
+    end
+
+    local function setRowMacros(button, entry)
+        local unit
+        if not entry.closingAt then
+            unit = findClickUnit(entry.guid)
+            if not unit and isUsableClickUnit(entry.clickUnit, entry.guid, entry.name) then
+                unit = entry.clickUnit
+            end
+        end
+        local targetByName = not entry.closingAt and type(entry.name) == "string" and entry.name ~= ""
+        entry.clickUnit = unit
+        entry.targetByName = targetByName
+        -- Use the secure target command for the main row click. Unit-token target actions
+        -- were unreliable on this client; exact-name targeting is securely handled by the client.
+        button:SetAttribute("type1", targetByName and "macro" or nil)
+        button:SetAttribute("unit", nil)
+        button:SetAttribute("macrotext1", targetByName and ("/targetexact " .. entry.name) or nil)
         if button.petButton then
-            button.petButton:SetAttribute("macrotext", string.format(around, "/petattack"))
+            button.petButton:SetAttribute("macrotext", unit and ("/petattack [@" .. unit .. ",exists,harm,nodead]") or nil)
         end
         if button.markButton then
-            local pre, post = around:match("^(.-)%%s(.*)$")
-            button.markButton:SetAttribute("hrb-pre", pre)
-            button.markButton:SetAttribute("hrb-post", post)
-            button.markButton:SetAttribute("macrotext1", string.format(around, "/tm " .. SKULL))
-            -- Fallback without the secure snippet: plain cross.
-            button.markButton:SetAttribute("macrotext2", string.format(around, "/tm " .. CROSS))
-            button.markButton:SetAttribute("shift-macrotext1", string.format(around, "/tm 0"))
-            button.markButton:SetAttribute("shift-macrotext2", string.format(around, "/tm 0"))
+            -- "/tm" is not a secure slash command in this client, so SetRaidTarget from a macro is blocked
+            -- in combat. The built-in secure "raidtarget" action calls it from Blizzard's secure code instead.
+            local markButton = button.markButton
+            local mark = unit and "raidtarget" or nil
+            markButton:SetAttribute("unit", unit)
+            markButton:SetAttribute("macrotext1", nil)
+            markButton:SetAttribute("ctrl-macrotext1", nil)
+            markButton:SetAttribute("shift-macrotext1", nil)
+            markButton:SetAttribute("macrotext4", nil)
+            markButton:SetAttribute("type1", mark)
+            markButton:SetAttribute("marker1", SKULL)
+            markButton:SetAttribute("action1", "toggle")
+            markButton:SetAttribute("ctrl-type1", mark)
+            markButton:SetAttribute("ctrl-marker1", CROSS)
+            markButton:SetAttribute("ctrl-action1", "set")
+            markButton:SetAttribute("shift-type1", mark)
+            markButton:SetAttribute("shift-action1", "clear")
+            markButton:SetAttribute("type4", nil)
+            markButton:SetAttribute("marker4", nil)
         end
     end
 
@@ -2234,6 +2460,9 @@ do
     end
 
     local function updateEntry(entry)
+        if entry.closingAt then
+            return
+        end
         local unit = findUnit(entry.guid)
         local text, r, g, b = "?", 0.6, 0.6, 0.6
         if unit then
@@ -2241,17 +2470,7 @@ do
                 dropEntry(entry)
                 return
             end
-            local beyond
-            text, r, g, b, beyond = unitRange(unit)
-            if beyond then
-                entry.farChecks = (entry.farChecks or 0) + 1
-                if entry.farChecks >= FAR_CHECKS then
-                    dropEntry(entry)
-                    return
-                end
-            else
-                entry.farChecks = 0
-            end
+            text, r, g, b = unitRange(unit)
             captureHealth(entry, unit)
             entry.mark = readMark(unit)
         end
@@ -2274,6 +2493,9 @@ do
     end
 
     local function addCurrentTarget()
+        if inCombat() then
+            return
+        end
         refreshMacros()
         local ok, data = pcall(function()
             if not UnitExists("target") then
@@ -2290,13 +2512,9 @@ do
             if isSecret(guid) then
                 guid = nil
             end
-            return { name = name, guid = guid }
+            return { name = name, guid = guid, clickUnit = getTargetClickUnit() }
         end)
         if not ok or not data then
-            return
-        end
-        local _, _, _, _, beyond = unitRange("target")
-        if beyond then
             return
         end
         captureHealth(data, "target")
@@ -2304,37 +2522,24 @@ do
 
         -- One row per enemy (GUID); without a GUID fall back to the name.
         for _, entry in ipairs(entries) do
-            if (data.guid and entry.guid == data.guid) or (not data.guid and not entry.guid and entry.name == data.name) then
+            local sameEnemy = data.guid and entry.guid == data.guid
+                or not data.guid and not entry.guid and (
+                    data.clickUnit and entry.clickUnit == data.clickUnit
+                    or not data.clickUnit and not entry.clickUnit and entry.name == data.name
+                )
+            if sameEnemy then
                 if data.hpMax ~= nil then
                     entry.hpCur, entry.hpMax, entry.hpColor, entry.hpText = data.hpCur, data.hpMax, data.hpColor, data.hpText
                 end
                 entry.mark = data.mark
-                entry.farChecks = 0
+                entry.clickUnit = data.clickUnit or entry.clickUnit
                 refreshMacros()
                 return
             end
         end
 
         table.insert(entries, data)
-        if inCombat() then
-            -- Lowest free slot, possibly where a removed enemy's (now invisible) secure row stays until combat ends.
-            local slot = 1
-            local taken = true
-            while taken do
-                taken = false
-                for _, entry in ipairs(entries) do
-                    if entry.slot == slot then
-                        taken = true
-                        slot = slot + 1
-                        break
-                    end
-                end
-            end
-            data.pending = true
-            placeRow(getPlainRow(), slot, data)
-        else
-            layout()
-        end
+        layout()
         updateEntry(data)
     end
 
@@ -2361,11 +2566,38 @@ do
     local events = CreateFrame("Frame")
     events:RegisterEvent("PLAYER_ENTERING_WORLD")
     events:RegisterEvent("PLAYER_REGEN_ENABLED")
+    events:RegisterEvent("PLAYER_REGEN_DISABLED")
+    events:RegisterEvent("NAME_PLATE_UNIT_ADDED")
+    events:RegisterEvent("NAME_PLATE_UNIT_REMOVED")
     events:RegisterEvent("PLAYER_TARGET_CHANGED")
-    events:SetScript("OnEvent", function(_, event)
+    events:SetScript("OnEvent", function(_, event, unit)
         if event == "PLAYER_TARGET_CHANGED" then
             addCurrentTarget()
             return
+        end
+        if event == "PLAYER_REGEN_DISABLED" then
+            return
+        end
+        if event == "NAME_PLATE_UNIT_ADDED" or event == "NAME_PLATE_UNIT_REMOVED" then
+            if event == "NAME_PLATE_UNIT_REMOVED" then
+                for _, entry in ipairs(entries) do
+                    if entry.clickUnit == unit then
+                        entry.clickUnit = nil
+                    end
+                end
+            end
+            refreshMacros()
+            return
+        end
+        if event == "PLAYER_REGEN_ENABLED" then
+            for index = #entries, 1, -1 do
+                local entry = entries[index]
+                updateEntry(entry)
+                if entry.closingAt then
+                    table.remove(entries, index)
+                    releaseRow(entry)
+                end
+            end
         end
         if event == "PLAYER_ENTERING_WORLD" or pendingSync then
             syncPosition()
@@ -2375,11 +2607,13 @@ do
 
     local updateElapsed = 0
     frame:HookScript("OnUpdate", function(_, elapsed)
+        updateClosingRows(GetTime())
         updateElapsed = updateElapsed + elapsed
         if updateElapsed < 0.2 then
             return
         end
         updateElapsed = 0
+        refreshMacros()
         for index = #entries, 1, -1 do
             if entries[index] then
                 updateEntry(entries[index])
@@ -2394,7 +2628,7 @@ do
             for index = #entries, 1, -1 do
                 dropEntry(entries[index])
             end
-            print("Seznam targetů byl vyčištěn.")
+            print(L(inCombat() and "listCombat" or "listClear"))
             return
         end
         slashHandler(message)

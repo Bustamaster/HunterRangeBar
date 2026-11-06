@@ -1,0 +1,2402 @@
+local MAX_RANGE = 40
+local FAR_RANGE = 100
+local UPDATE_INTERVAL = 0.1
+local ANIMATION_SPEED = 6
+
+-- Real range thresholds available for hostile targets (item IDs taken from LibRangeCheck-3.0, Era/Forever lists).
+local HOSTILE_THRESHOLDS = {
+    { range = 40, spellID = 3044, spellName = "Arcane Shot" },
+    { range = 45, itemIDs = { 221316 } },
+    { range = 100, itemIDs = { 23715, 23718, 23719, 23721, 23722, 227685, 17162, 5418 } },
+}
+
+local MELEE_RANGE = 5
+local DEAD_ZONE_RANGE = 8
+
+-- Melee range: 5 yd items (LibRangeCheck Era/Forever), then hunter melee spells.
+local MELEE_ITEMS = { 8149, 15826, 16308, 17117, 22259, 22432, 206466, 208760, 208855, 209027, 209057, 213036, 221199, 225943 }
+local MELEE_SPELLS = {
+    { spellID = 2974, spellName = "Wing Clip" },
+    { spellID = 2973, spellName = "Raptor Strike" },
+}
+-- Short range checks (10 and 20 yd items) that tell the dead zone apart from 40-45 yd.
+local SHORT_RANGE_ITEMS = {
+    9606, 9618, 9619, 9620, 9621, 10699, 17626, 17689, 226472,
+    1191, 2012, 4388, 10645, 13892, 17757, 18209, 22048, 202251, 227936, 232344,
+}
+
+local ZONE_STYLES = {
+    ranged = { fill = { 0.25, 1, 0.3 }, glow = { 0.3, 1, 0.3 }, flash = { 0.7, 1, 0.7 } },
+    dead = { fill = { 1, 0.15, 0.15 }, glow = { 1, 0.2, 0.2 }, flash = { 1, 0.5, 0.5 } },
+    melee = { fill = { 1, 0.7, 0.1 }, glow = { 1, 0.75, 0.1 }, flash = { 1, 0.9, 0.5 } },
+}
+
+local FALLBACK_CHECKS = {
+    { range = 9.9, interactIndex = 3, friendlyOnly = true },
+    { range = 11.11, interactIndex = 2, friendlyOnly = true },
+    { range = 20, spellID = 19503, spellName = "Scatter Shot", friendlyOnly = true },
+    { range = 28, interactIndex = 1, friendlyOnly = true },
+    { range = 35, spellID = 75, spellName = "Auto Shot", hostileOnly = true },
+    { range = 35, spellID = 5116, spellName = "Concussive Shot", hostileOnly = true },
+    { range = 40, spellID = 3044, spellName = "Arcane Shot", hostileOnly = true },
+}
+
+local frame = CreateFrame("Frame", "HunterRangeBarFrame", UIParent)
+frame:SetSize(460, 32)
+frame:SetPoint("CENTER", UIParent, "CENTER", 0, -180)
+frame:SetFrameStrata("MEDIUM")
+frame:SetClampedToScreen(true)
+frame:SetMovable(true)
+frame:EnableMouse(true)
+frame:RegisterForDrag("LeftButton")
+
+-- Visual style copied from the built-in swing timer (Blizzard_SwingTimer.xml); plain colors are used if the atlases are missing.
+local function hasAtlas(atlas)
+    return C_Texture and type(C_Texture.GetAtlasInfo) == "function" and C_Texture.GetAtlasInfo(atlas) ~= nil
+end
+
+local USE_SWING_STYLE = hasAtlas("ui-swingtimerbar-frame") and hasAtlas("ui-swingtimerbar-background")
+local FILL_ATLAS = "ui-swingtimerbar-filling-mainhand"
+
+local background = frame:CreateTexture(nil, "BACKGROUND")
+background:SetAllPoints(frame)
+
+local border = frame:CreateTexture(nil, "BACKGROUND", nil, 1)
+border:SetAllPoints(frame)
+
+local statusBar = CreateFrame("StatusBar", nil, frame)
+statusBar:SetMinMaxValues(0, 1)
+statusBar:SetValue(0)
+
+if USE_SWING_STYLE then
+    background:SetAtlas("ui-swingtimerbar-background")
+    border:SetAtlas("ui-swingtimerbar-frame")
+    statusBar:SetPoint("TOPLEFT", frame, "TOPLEFT", 5, -4)
+    statusBar:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", -5, 4)
+    if hasAtlas(FILL_ATLAS) then
+        statusBar:SetStatusBarTexture(FILL_ATLAS)
+        statusBar:GetStatusBarTexture():SetDesaturated(true)
+    else
+        statusBar:SetStatusBarTexture("Interface\\TargetingFrame\\UI-StatusBar")
+    end
+    statusBar:SetStatusBarColor(0.25, 1, 0.3, 1)
+else
+    background:SetColorTexture(0.22, 0.03, 0.03, 1)
+    border:Hide()
+    statusBar:SetPoint("TOPLEFT", frame, "TOPLEFT", 2, -2)
+    statusBar:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", -2, 2)
+    statusBar:SetStatusBarTexture("Interface\\TargetingFrame\\UI-StatusBar")
+    statusBar:SetStatusBarColor(0.1, 0.9, 0.2, 1)
+end
+
+local pip
+if USE_SWING_STYLE and hasAtlas("ui-swingtimerbar-pip") then
+    pip = statusBar:CreateTexture(nil, "OVERLAY")
+    pip:SetAtlas("ui-swingtimerbar-pip", true)
+    pip:SetPoint("RIGHT", statusBar:GetStatusBarTexture(), "RIGHT", 0, 0)
+end
+
+if USE_SWING_STYLE and hasAtlas("ui-swingtimerbar-textshadow-left") then
+    local textShadow = statusBar:CreateTexture(nil, "OVERLAY")
+    textShadow:SetAtlas("ui-swingtimerbar-textshadow-left")
+    textShadow:SetWidth(171)
+    textShadow:SetPoint("TOPLEFT")
+    textShadow:SetPoint("BOTTOMLEFT")
+end
+
+local nameLabel = statusBar:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+nameLabel:SetPoint("LEFT", statusBar, "LEFT", 10, 0)
+nameLabel:SetJustifyH("LEFT")
+
+local infoLabel = statusBar:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+infoLabel:SetPoint("RIGHT", statusBar, "RIGHT", -10, 0)
+infoLabel:SetJustifyH("RIGHT")
+
+-- Texts are built as "Name  |  distance  |  status": the name goes left, the rest right (like the swing timer).
+local label = {}
+function label:SetText(text)
+    local name, rest = string.match(text, "^(.-)  |  (.*)$")
+    nameLabel:SetText(name or text)
+    infoLabel:SetText(rest or "")
+end
+
+local BAR_STATES = {
+    none = { alpha = 0.6, text = { 0.7, 0.7, 0.7 }, plainBackground = { 0.3, 0.3, 0.3 } },
+    outOfRange = { alpha = 1, text = { 1, 0.13, 0.13 }, plainBackground = { 0.22, 0.03, 0.03 } },
+    inRange = { alpha = 1, text = { 1, 1, 1 }, plainBackground = { 0.22, 0.03, 0.03 } },
+}
+
+local function setBarState(stateName)
+    local state = BAR_STATES[stateName]
+    frame:SetAlpha(state.alpha)
+    nameLabel:SetTextColor(1, 1, 1)
+    infoLabel:SetTextColor(state.text[1], state.text[2], state.text[3])
+    if stateName == "none" then
+        nameLabel:SetTextColor(state.text[1], state.text[2], state.text[3])
+    end
+    if not USE_SWING_STYLE then
+        background:SetColorTexture(state.plainBackground[1], state.plainBackground[2], state.plainBackground[3], 1)
+    end
+end
+
+local function matchSwingTimerSize()
+    local reference = _G.SwingTimerRangedFrame or _G.SwingTimerMainHandFrame
+    if reference and reference.GetSize then
+        local width, height = reference:GetSize()
+        if type(width) == "number" and type(height) == "number" and width > 50 and height > 5 then
+            frame:SetSize(width, height)
+        end
+    end
+end
+
+if pip then
+    statusBar:HookScript("OnValueChanged", function(_, value)
+        pip:SetShown(value > 0.005 and value < 0.995)
+    end)
+    pip:Hide()
+end
+
+-- Bright green outline shown while the target is in shooting range.
+local rangeGlow = frame:CreateTexture(nil, "BACKGROUND", nil, -1)
+rangeGlow:SetPoint("TOPLEFT", frame, "TOPLEFT", -3, 3)
+rangeGlow:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", 3, -3)
+rangeGlow:SetColorTexture(0.3, 1, 0.3, 0.9)
+rangeGlow:Hide()
+
+-- Short flash over the bar when the target enters range.
+local rangeFlash = statusBar:CreateTexture(nil, "OVERLAY", nil, -1)
+rangeFlash:SetAllPoints(statusBar)
+rangeFlash:SetColorTexture(0.7, 1, 0.7, 1)
+rangeFlash:SetBlendMode("ADD")
+rangeFlash:SetAlpha(0)
+
+local ICON_SIZE = 39
+local MIN_TRACKED_COOLDOWN = 1.6
+local IGNORED_SPELLS = {
+    [75] = true, -- Auto Shot
+}
+
+-- Spells without their own cooldown that are shown for the duration of their debuff on the target.
+-- Matched by name so every rank works; the duration is a fallback when the aura cannot be read.
+local TRACKED_DEBUFFS = {
+    ["Serpent Sting"] = 15,
+    ["Scorpid Sting"] = 20,
+    ["Viper Sting"] = 8,
+}
+
+local iconLane = CreateFrame("Frame", nil, frame)
+iconLane:SetPoint("BOTTOMLEFT", frame, "TOPLEFT", 0, 2)
+iconLane:SetPoint("BOTTOMRIGHT", frame, "TOPRIGHT", 0, 2)
+iconLane:SetHeight(ICON_SIZE)
+
+local activeCooldownIcons = {}
+local pendingCasts = {}
+local iconPool = {}
+
+local function isSecret(value)
+    return type(issecretvalue) == "function" and issecretvalue(value)
+end
+
+local function spellName(spellID)
+    local name
+    if C_Spell and type(C_Spell.GetSpellName) == "function" then
+        name = C_Spell.GetSpellName(spellID)
+    elseif type(GetSpellInfo) == "function" then
+        name = GetSpellInfo(spellID)
+    end
+    if type(name) == "string" and not isSecret(name) then
+        return name
+    end
+end
+
+-- Returns startTime, duration of the player's debuff on the target, or nil when unknown.
+local function readTargetDebuff(name)
+    if not (C_UnitAuras and type(C_UnitAuras.GetAuraDataBySpellName) == "function") then
+        return nil
+    end
+
+    local ok, aura = pcall(C_UnitAuras.GetAuraDataBySpellName, "target", name, "HARMFUL|PLAYER")
+    if not ok or type(aura) ~= "table" then
+        return nil
+    end
+
+    local expirationTime, duration = aura.expirationTime, aura.duration
+    if isSecret(expirationTime) or isSecret(duration)
+        or type(expirationTime) ~= "number" or type(duration) ~= "number" or duration <= 0
+    then
+        return nil
+    end
+    return expirationTime - duration, duration
+end
+
+local MARK_SPELL_ID = 1130 -- Hunter's Mark (rank 1); used for the name and icon of every rank.
+
+local markIcon = CreateFrame("Frame", nil, frame)
+markIcon:SetSize(ICON_SIZE, ICON_SIZE)
+markIcon:SetPoint("RIGHT", frame, "LEFT", -4, 0)
+markIcon.texture = markIcon:CreateTexture(nil, "ARTWORK")
+markIcon.texture:SetAllPoints(markIcon)
+markIcon.texture:SetTexCoord(0.08, 0.92, 0.08, 0.92)
+markIcon.timer = markIcon:CreateFontString(nil, "OVERLAY", "NumberFontNormal")
+markIcon.timer:SetPoint("BOTTOM", markIcon, "BOTTOM", 0, 2)
+markIcon:Hide()
+
+-- Returns aura table for Hunter's Mark on the target (from any hunter), or nil.
+local function findTargetMark()
+    if not UnitExists("target") then
+        return nil
+    end
+
+    local name
+    if C_Spell and type(C_Spell.GetSpellName) == "function" then
+        name = C_Spell.GetSpellName(MARK_SPELL_ID)
+    end
+    if type(name) ~= "string" or isSecret(name) then
+        name = "Hunter's Mark"
+    end
+
+    if C_UnitAuras and type(C_UnitAuras.GetAuraDataBySpellName) == "function" then
+        local ok, aura = pcall(C_UnitAuras.GetAuraDataBySpellName, "target", name, "HARMFUL")
+        if ok and type(aura) == "table" then
+            return aura
+        end
+    end
+end
+
+local function updateMarkIcon()
+    local aura = findTargetMark()
+    if not aura then
+        markIcon:Hide()
+        return
+    end
+
+    local texture = aura.icon
+    if texture == nil or isSecret(texture) then
+        texture = C_Spell and C_Spell.GetSpellTexture and C_Spell.GetSpellTexture(MARK_SPELL_ID)
+    end
+    markIcon.texture:SetTexture(texture)
+
+    local expirationTime = aura.expirationTime
+    local remaining = (type(expirationTime) == "number" and not isSecret(expirationTime) and expirationTime > 0)
+        and (expirationTime - GetTime()) or nil
+    if remaining and remaining > 0 then
+        markIcon.timer:SetText(remaining >= 60 and string.format("%dm", math.ceil(remaining / 60))
+            or string.format("%d", math.ceil(remaining)))
+    else
+        markIcon.timer:SetText("")
+    end
+    markIcon:Show()
+end
+
+local function readSpellCooldown(spellID)
+    local startTime, duration
+    if C_Spell and type(C_Spell.GetSpellCooldown) == "function" then
+        local info = C_Spell.GetSpellCooldown(spellID)
+        if type(info) == "table" then
+            startTime, duration = info.startTime, info.duration
+        end
+    elseif type(GetSpellCooldown) == "function" then
+        startTime, duration = GetSpellCooldown(spellID)
+    end
+
+    if isSecret(startTime) or isSecret(duration)
+        or type(startTime) ~= "number" or type(duration) ~= "number"
+    then
+        return nil
+    end
+    return startTime, duration
+end
+
+local function baseCooldown(spellID)
+    if type(GetSpellBaseCooldown) ~= "function" then
+        return nil
+    end
+    local cooldownMs = GetSpellBaseCooldown(spellID)
+    if type(cooldownMs) == "number" and not isSecret(cooldownMs) and cooldownMs > 0 then
+        return cooldownMs / 1000
+    end
+end
+
+local function spellIcon(spellID)
+    if C_Spell and type(C_Spell.GetSpellTexture) == "function" then
+        return C_Spell.GetSpellTexture(spellID)
+    elseif type(GetSpellTexture) == "function" then
+        return GetSpellTexture(spellID)
+    end
+end
+
+local function acquireIcon()
+    local icon = table.remove(iconPool)
+    if icon then
+        return icon
+    end
+
+    icon = CreateFrame("Frame", nil, iconLane)
+    icon:SetSize(ICON_SIZE, ICON_SIZE)
+
+    icon.shadow = icon:CreateTexture(nil, "BACKGROUND", nil, -2)
+    icon.shadow:SetPoint("TOPLEFT", icon, "TOPLEFT", -4, 4)
+    icon.shadow:SetPoint("BOTTOMRIGHT", icon, "BOTTOMRIGHT", 4, -4)
+    icon.shadow:SetColorTexture(0, 0, 0, 0.45)
+
+    -- Coloured outer edge (bronze like the swing timer frame, red for stings) with a thin black inner edge.
+    icon.border = icon:CreateTexture(nil, "BACKGROUND", nil, -1)
+    icon.border:SetPoint("TOPLEFT", icon, "TOPLEFT", -2, 2)
+    icon.border:SetPoint("BOTTOMRIGHT", icon, "BOTTOMRIGHT", 2, -2)
+    icon.innerEdge = icon:CreateTexture(nil, "BACKGROUND", nil, 0)
+    icon.innerEdge:SetPoint("TOPLEFT", icon, "TOPLEFT", -1, 1)
+    icon.innerEdge:SetPoint("BOTTOMRIGHT", icon, "BOTTOMRIGHT", 1, -1)
+    icon.innerEdge:SetColorTexture(0, 0, 0, 1)
+
+    icon.texture = icon:CreateTexture(nil, "ARTWORK")
+    icon.texture:SetAllPoints(icon)
+    icon.texture:SetTexCoord(0.08, 0.92, 0.08, 0.92)
+
+    -- Clock-like sweep that darkens the part of the cooldown that is still left.
+    local ok, cooldown = pcall(CreateFrame, "Cooldown", nil, icon, "CooldownFrameTemplate")
+    if ok and cooldown then
+        cooldown:SetAllPoints(icon)
+        if cooldown.SetDrawEdge then cooldown:SetDrawEdge(false) end
+        if cooldown.SetDrawBling then cooldown:SetDrawBling(false) end
+        if cooldown.SetHideCountdownNumbers then cooldown:SetHideCountdownNumbers(true) end
+        if cooldown.SetSwipeColor then cooldown:SetSwipeColor(0, 0, 0, 0.55) end
+        icon.cooldown = cooldown
+    end
+
+    -- Text and flash live on a child frame so they are drawn above the cooldown sweep.
+    icon.overlay = CreateFrame("Frame", nil, icon)
+    icon.overlay:SetAllPoints(icon)
+    icon.overlay:SetFrameLevel(icon:GetFrameLevel() + 5)
+    icon.timer = icon.overlay:CreateFontString(nil, "OVERLAY", "NumberFontNormal")
+    icon.timer:SetPoint("CENTER", icon, "CENTER", 0, 0)
+    icon.timer:SetFont(STANDARD_TEXT_FONT or "Fonts\\FRIZQT__.TTF", 15, "OUTLINE")
+    icon.timer:SetShadowOffset(1, -1)
+    icon.timer:SetShadowColor(0, 0, 0, 1)
+    icon.flash = icon.overlay:CreateTexture(nil, "OVERLAY")
+    icon.flash:SetPoint("TOPLEFT", icon, "TOPLEFT", -2, 2)
+    icon.flash:SetPoint("BOTTOMRIGHT", icon, "BOTTOMRIGHT", 2, -2)
+    icon.flash:SetColorTexture(1, 1, 1, 1)
+    icon.flash:SetBlendMode("ADD")
+    icon.flash:SetAlpha(0)
+    return icon
+end
+
+local ICON_FADE_IN = 0.2
+local ICON_FINISH_DURATION = 0.45
+
+local function releaseIcon(spellID)
+    local icon = activeCooldownIcons[spellID]
+    if icon then
+        icon:Hide()
+        icon:SetAlpha(1)
+        icon.flash:SetAlpha(0)
+        icon.finishAt = nil
+        icon.laneX, icon.liftY, icon.layoutTime, icon.row = nil, nil, nil, nil
+        if icon.cooldown and icon.cooldown.Clear then
+            icon.cooldown:Clear()
+        end
+        activeCooldownIcons[spellID] = nil
+        table.insert(iconPool, icon)
+    end
+end
+
+-- Column right of the bar: every used cooldown ability stacks upwards, shows its cooldown and
+-- turns green with a flash once it is usable again (it stays green until it is used again).
+local STACK_ICON_SIZE = 26
+local STACK_SPACING = 3
+local STACK_FLASH_DURATION = 0.6
+local stackEntries = {}
+local stackOrder = {}
+
+-- Only offensive abilities go into the column. Matched by name (all ranks); spells the client reports as
+-- harmful are accepted too, so new or renamed attacks still show up.
+local OFFENSIVE_SPELLS = {
+    ["Arcane Shot"] = true, ["Multi-Shot"] = true, ["Aimed Shot"] = true, ["Concussive Shot"] = true,
+    ["Scatter Shot"] = true, ["Wyvern Sting"] = true, ["Volley"] = true, ["Kill Shot"] = true,
+    ["Explosive Shot"] = true, ["Chimera Shot"] = true, ["Kill Command"] = true, ["Intimidation"] = true,
+    ["Raptor Strike"] = true, ["Mongoose Bite"] = true, ["Counterattack"] = true, ["Flanking Strike"] = true,
+    ["Carve"] = true, ["Wing Clip"] = true,
+    ["Explosive Trap"] = true, ["Immolation Trap"] = true, ["Freezing Trap"] = true, ["Frost Trap"] = true,
+    ["Snake Trap"] = true,
+}
+
+local function isOffensiveSpell(spellID)
+    local name = spellName(spellID)
+    if name and OFFENSIVE_SPELLS[name] then
+        return true
+    end
+    if C_Spell and type(C_Spell.IsSpellHarmful) == "function" then
+        local ok, harmful = pcall(C_Spell.IsSpellHarmful, spellID)
+        if ok and harmful == true then
+            return true
+        end
+    end
+    return false
+end
+
+-- The column sits above the right end of the bar; travelling icons stop short of it so they don't overlap.
+iconLane:SetPoint("BOTTOMRIGHT", frame, "TOPRIGHT", -(STACK_ICON_SIZE + 6), 2)
+
+local function layoutStack()
+    for index, entry in ipairs(stackOrder) do
+        entry:ClearAllPoints()
+        entry:SetPoint("BOTTOMRIGHT", frame, "TOPRIGHT", 0, 4 + (index - 1) * (STACK_ICON_SIZE + STACK_SPACING))
+    end
+end
+
+local function getStackEntry(spellID, texture)
+    local entry = stackEntries[spellID]
+    if not entry then
+        entry = CreateFrame("Frame", nil, frame)
+        entry:SetSize(STACK_ICON_SIZE, STACK_ICON_SIZE)
+        entry.border = entry:CreateTexture(nil, "BACKGROUND")
+        entry.border:SetPoint("TOPLEFT", entry, "TOPLEFT", -2, 2)
+        entry.border:SetPoint("BOTTOMRIGHT", entry, "BOTTOMRIGHT", 2, -2)
+        entry.texture = entry:CreateTexture(nil, "ARTWORK")
+        entry.texture:SetAllPoints(entry)
+        entry.texture:SetTexCoord(0.08, 0.92, 0.08, 0.92)
+        entry.shade = entry:CreateTexture(nil, "OVERLAY")
+        entry.shade:SetAllPoints(entry)
+        entry.shade:SetColorTexture(0, 0, 0, 0.55)
+        entry.flash = entry:CreateTexture(nil, "OVERLAY")
+        entry.flash:SetPoint("TOPLEFT", entry, "TOPLEFT", -2, 2)
+        entry.flash:SetPoint("BOTTOMRIGHT", entry, "BOTTOMRIGHT", 2, -2)
+        entry.flash:SetColorTexture(0.3, 1, 0.3, 1)
+        entry.flash:SetBlendMode("ADD")
+        entry.flash:SetAlpha(0)
+        entry.timer = entry:CreateFontString(nil, "OVERLAY", "NumberFontNormalSmall")
+        entry.timer:SetPoint("CENTER", entry, "CENTER", 0, 0)
+        -- Right click removes the icon from the column (it comes back the next time the ability is used).
+        entry.spellID = spellID
+        entry:EnableMouse(true)
+        entry:SetScript("OnMouseUp", function(self, mouseButton)
+            if mouseButton ~= "RightButton" then
+                return
+            end
+            self:Hide()
+            self.flashStart = nil
+            if stackEntries[self.spellID] == self then
+                stackEntries[self.spellID] = nil
+            end
+            for index, other in ipairs(stackOrder) do
+                if other == self then
+                    table.remove(stackOrder, index)
+                    break
+                end
+            end
+            layoutStack()
+        end)
+        stackEntries[spellID] = entry
+        table.insert(stackOrder, entry)
+        layoutStack()
+    end
+    entry.texture:SetTexture(texture)
+    return entry
+end
+
+local function setStackCooldown(spellID, texture)
+    local entry = getStackEntry(spellID, texture)
+    entry.ready = false
+    entry.flashStart = nil
+    entry.flash:SetAlpha(0)
+    entry.border:SetColorTexture(0.2, 0.2, 0.2, 1)
+    entry.texture:SetDesaturated(true)
+    entry.shade:Show()
+    entry:Show()
+end
+
+local function setStackReady(spellID)
+    local entry = stackEntries[spellID]
+    if not entry or entry.ready then
+        return
+    end
+    entry.ready = true
+    entry.border:SetColorTexture(0.1, 1, 0.1, 1)
+    entry.texture:SetDesaturated(false)
+    entry.shade:Hide()
+    entry.timer:SetText("")
+    entry.flashStart = GetTime()
+end
+
+local function setStackTimer(spellID, text)
+    local entry = stackEntries[spellID]
+    if entry and not entry.ready then
+        entry.timer:SetText(text)
+    end
+end
+
+local function updateStackFlashes(now)
+    for _, entry in ipairs(stackOrder) do
+        if entry.flashStart then
+            local t = now - entry.flashStart
+            if t >= STACK_FLASH_DURATION then
+                entry.flashStart = nil
+                entry.flash:SetAlpha(0)
+            else
+                entry.flash:SetAlpha(0.8 * math.abs(math.sin(t / STACK_FLASH_DURATION * 2 * math.pi)))
+            end
+        end
+    end
+end
+
+local function clearStack()
+    for _, entry in ipairs(stackOrder) do
+        entry:Hide()
+    end
+    stackEntries = {}
+    stackOrder = {}
+end
+
+local function startCooldownIcon(spellID, startTime, duration, debuffName)
+    local texture = spellIcon(spellID)
+    if not texture then
+        return
+    end
+    if debuffName or isOffensiveSpell(spellID) then
+        setStackCooldown(spellID, texture)
+    end
+
+    local icon = activeCooldownIcons[spellID]
+    if not icon or icon.finishAt then
+        icon = icon or acquireIcon()
+        icon.shownAt = GetTime()
+    end
+    icon.texture:SetTexture(texture)
+    icon.spellID = spellID
+    icon.startTime = startTime
+    icon.duration = duration
+    icon.debuffName = debuffName
+    icon.auraSeen = false
+    icon.finishAt = nil
+    icon.sweepStart, icon.sweepDuration = nil, nil
+    icon.flash:SetAlpha(0)
+    if debuffName then
+        icon.border:SetColorTexture(0.9, 0.08, 0.08, 1)
+    else
+        icon.border:SetColorTexture(0.78, 0.62, 0.3, 1)
+    end
+    activeCooldownIcons[spellID] = icon
+    icon:Show()
+end
+
+local function updateIconSweep(icon)
+    if icon.cooldown and (icon.sweepStart ~= icon.startTime or icon.sweepDuration ~= icon.duration) then
+        icon.sweepStart, icon.sweepDuration = icon.startTime, icon.duration
+        icon.cooldown:SetCooldown(icon.startTime, icon.duration)
+    end
+end
+
+local function timerColor(remaining)
+    if remaining > 5 then
+        return 1, 1, 1
+    elseif remaining > 2 then
+        return 1, 0.85, 0.2
+    end
+    return 1, 0.35, 0.2
+end
+
+local function processPendingCasts(now)
+    for spellID, castTime in pairs(pendingCasts) do
+        local name = spellName(spellID)
+        local debuffDuration = name and TRACKED_DEBUFFS[name]
+        if debuffDuration then
+            local startTime, duration = readTargetDebuff(name)
+            if startTime and math.abs(startTime - castTime) < 1 then
+                startCooldownIcon(spellID, startTime, duration, name)
+                pendingCasts[spellID] = nil
+            elseif now - castTime > 0.3 then
+                startCooldownIcon(spellID, castTime, debuffDuration, name)
+                pendingCasts[spellID] = nil
+            end
+        else
+            local startTime, duration = readSpellCooldown(spellID)
+            if startTime and duration > MIN_TRACKED_COOLDOWN then
+                startCooldownIcon(spellID, startTime, duration)
+                pendingCasts[spellID] = nil
+            elseif now - castTime > 0.3 then
+                -- Cooldown values are restricted or not reported yet; fall back to the base cooldown.
+                local fallbackDuration = startTime == nil and baseCooldown(spellID)
+                if fallbackDuration and fallbackDuration > MIN_TRACKED_COOLDOWN then
+                    startCooldownIcon(spellID, castTime, fallbackDuration)
+                end
+                pendingCasts[spellID] = nil
+            end
+        end
+    end
+end
+
+-- Overlapping floating icons are lifted into rows; each row is only part of an icon higher so they stay compact.
+-- Rows are sticky so the layout stays calm: an icon keeps its row for its whole trip, only a genuine
+-- collision lifts the newer icon one row up, and icons never drop back down.
+local ROW_STEP = math.floor(ICON_SIZE * 0.825)
+local COLLISION_DISTANCE = ICON_SIZE - 6
+local LIFT_SPEED = 6
+local floatingOrder = {}
+
+local function layoutFloatingIcons(now)
+    for index = #floatingOrder, 1, -1 do
+        floatingOrder[index] = nil
+    end
+    for _, icon in pairs(activeCooldownIcons) do
+        if icon.laneX then
+            table.insert(floatingOrder, icon)
+        end
+    end
+    -- Older icons claim their rows first; newer ones yield.
+    table.sort(floatingOrder, function(a, b)
+        local aTime, bTime = a.shownAt or 0, b.shownAt or 0
+        if aTime ~= bTime then
+            return aTime < bTime
+        end
+        return (a.spellID or 0) < (b.spellID or 0)
+    end)
+
+    local placed = {}
+    for _, icon in ipairs(floatingOrder) do
+        local row = icon.row or 0
+        local collides = true
+        while collides do
+            collides = false
+            for _, other in ipairs(placed) do
+                if other.row == row and math.abs(other.laneX - icon.laneX) < COLLISION_DISTANCE then
+                    collides = true
+                    row = row + 1
+                    break
+                end
+            end
+        end
+        icon.row = row
+        table.insert(placed, icon)
+
+        local targetY = row * ROW_STEP
+        local elapsed = math.min(0.1, math.max(0, now - (icon.layoutTime or now)))
+        icon.layoutTime = now
+        if icon.liftY == nil then
+            icon.liftY = targetY
+        else
+            icon.liftY = icon.liftY + (targetY - icon.liftY) * math.min(1, elapsed * LIFT_SPEED)
+            if math.abs(targetY - icon.liftY) < 0.2 then
+                icon.liftY = targetY
+            end
+        end
+
+        icon:ClearAllPoints()
+        icon:SetPoint("BOTTOMLEFT", iconLane, "BOTTOMLEFT", icon.laneX, icon.liftY)
+        -- Higher rows are drawn above lower ones.
+        icon:SetFrameLevel(iconLane:GetFrameLevel() + 1 + row * 10)
+        if icon.cooldown then
+            icon.cooldown:SetFrameLevel(icon:GetFrameLevel() + 1)
+        end
+        icon.overlay:SetFrameLevel(icon:GetFrameLevel() + 5)
+    end
+end
+local function updateCooldownIcons()
+    local now = GetTime()
+    processPendingCasts(now)
+
+    local travelWidth = math.max(0, iconLane:GetWidth() - ICON_SIZE)
+    for spellID, icon in pairs(activeCooldownIcons) do
+        local finishing = icon.finishAt ~= nil
+        if finishing then
+            -- Finished: flash at the left edge and fade out.
+            local t = now - icon.finishAt
+            if t >= ICON_FINISH_DURATION then
+                releaseIcon(spellID)
+            else
+                local fraction = t / ICON_FINISH_DURATION
+                icon.flash:SetAlpha(0.9 * math.sin(fraction * math.pi))
+                icon:SetAlpha(1 - fraction * fraction)
+            end
+        elseif icon.debuffName then
+            local startTime, duration = readTargetDebuff(icon.debuffName)
+            if startTime and startTime >= icon.startTime - 0.5 then
+                icon.startTime, icon.duration = startTime, duration
+                icon.auraSeen = true
+            elseif icon.auraSeen and not startTime then
+                -- The debuff was readable before and is gone now (target died, dispelled or switched).
+                icon.duration = 0
+            end
+        else
+            local startTime, duration = readSpellCooldown(spellID)
+            if startTime then
+                if duration > MIN_TRACKED_COOLDOWN then
+                    icon.startTime, icon.duration = startTime, duration
+                elseif now >= icon.startTime + MIN_TRACKED_COOLDOWN then
+                    -- Only the GCD (or nothing) remains: the spell is usable again.
+                    icon.duration = 0
+                end
+            end
+        end
+
+        local remaining = icon.startTime + icon.duration - now
+        if finishing then
+            -- Handled above.
+        elseif remaining <= 0.05 then
+            setStackReady(spellID)
+            if not icon.debuffName then
+                icon.flash:SetColorTexture(0.3, 1, 0.3, 1)
+            else
+                icon.flash:SetColorTexture(1, 0.25, 0.2, 1)
+            end
+            icon.finishAt = now
+            icon.timer:SetText("")
+            if icon.cooldown and icon.cooldown.Clear then
+                icon.cooldown:Clear()
+            end
+            icon.laneX = 0
+        else
+            local progress = math.min(1, math.max(0, (now - icon.startTime) / icon.duration))
+            icon.laneX = travelWidth * (1 - progress)
+            icon:SetAlpha(math.min(1, (now - (icon.shownAt or now)) / ICON_FADE_IN))
+            updateIconSweep(icon)
+            local timerText = remaining >= 10 and string.format("%d", math.ceil(remaining))
+                or string.format("%.1f", remaining)
+            icon.timer:SetText(timerText)
+            icon.timer:SetTextColor(timerColor(remaining))
+            setStackTimer(spellID, remaining >= 10 and timerText or string.format("%d", math.ceil(remaining)))
+        end
+    end
+    layoutFloatingIcons(now)
+    updateStackFlashes(now)
+end
+
+local function onPlayerSpellCast(spellID)
+    if type(spellID) ~= "number" or isSecret(spellID) or IGNORED_SPELLS[spellID] then
+        return
+    end
+    pendingCasts[spellID] = GetTime()
+end
+
+local function restorePosition()
+    HunterRangeBarDB = HunterRangeBarDB or {}
+    HunterRangeBarDB.locked = HunterRangeBarDB.locked == true
+    frame:ClearAllPoints()
+    frame:SetPoint(
+        "CENTER",
+        UIParent,
+        "CENTER",
+        HunterRangeBarDB.x or 0,
+        HunterRangeBarDB.y or -180
+    )
+end
+
+local function savePosition()
+    HunterRangeBarDB = HunterRangeBarDB or {}
+    -- After dragging the frame is no longer anchored to CENTER, so convert to an offset from the screen center.
+    local x, y = frame:GetCenter()
+    local parentX, parentY = UIParent:GetCenter()
+    if x and parentX then
+        HunterRangeBarDB.x = math.floor(x - parentX + 0.5)
+        HunterRangeBarDB.y = math.floor(y - parentY + 0.5)
+    end
+end
+
+local DEFAULT_WIDTH, DEFAULT_HEIGHT = 460, 32
+local MIN_WIDTH, MAX_WIDTH = 100, 1000
+local MIN_HEIGHT, MAX_HEIGHT = 10, 80
+
+-- Uses the saved size; without one the bar copies the built-in swing timer size.
+local function applySize()
+    local db = HunterRangeBarDB or {}
+    if not (db.width and db.height) then
+        frame:SetSize(DEFAULT_WIDTH, DEFAULT_HEIGHT)
+        matchSwingTimerSize()
+    end
+    local width, height = frame:GetSize()
+    frame:SetSize(db.width or width, db.height or height)
+end
+
+local settingsFrame
+local refreshSettings = function() end
+
+local function createFrameSafe(frameType, parent, template)
+    if template then
+        local ok, created = pcall(CreateFrame, frameType, nil, parent, template)
+        if ok and created then
+            return created, true
+        end
+    end
+    return CreateFrame(frameType, nil, parent), false
+end
+
+-- Slider with a caption and an edit box for typing an exact value.
+local function createSettingRow(parent, caption, minValue, maxValue, top, onChange)
+    local row = {}
+    row.label = parent:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    row.label:SetPoint("TOPLEFT", parent, "TOPLEFT", 20, top)
+    row.label:SetText(caption)
+
+    local slider = CreateFrame("Slider", nil, parent)
+    slider:SetOrientation("HORIZONTAL")
+    slider:SetSize(200, 16)
+    slider:SetPoint("TOPLEFT", parent, "TOPLEFT", 20, top - 20)
+    slider:SetMinMaxValues(minValue, maxValue)
+    slider:SetValueStep(1)
+    if slider.SetObeyStepOnDrag then
+        slider:SetObeyStepOnDrag(true)
+    end
+    local track = slider:CreateTexture(nil, "BACKGROUND")
+    track:SetPoint("LEFT", slider, "LEFT", 0, 0)
+    track:SetPoint("RIGHT", slider, "RIGHT", 0, 0)
+    track:SetHeight(6)
+    track:SetColorTexture(0.15, 0.15, 0.15, 1)
+    slider:SetThumbTexture("Interface\\Buttons\\UI-SliderBar-Button-Horizontal")
+    slider:EnableMouseWheel(true)
+    slider:SetScript("OnMouseWheel", function(self, delta)
+        self:SetValue(self:GetValue() + delta)
+    end)
+    row.slider = slider
+
+    local editBox = createFrameSafe("EditBox", parent, "InputBoxTemplate")
+    editBox:SetSize(60, 20)
+    editBox:SetPoint("LEFT", slider, "RIGHT", 16, 0)
+    editBox:SetAutoFocus(false)
+    editBox:SetFontObject("GameFontHighlightSmall")
+    editBox:SetJustifyH("CENTER")
+    row.editBox = editBox
+
+    local function setValue(value)
+        value = math.floor(math.min(maxValue, math.max(minValue, value)) + 0.5)
+        row.updating = true
+        slider:SetValue(value)
+        editBox:SetText(tostring(value))
+        row.updating = false
+        return value
+    end
+    row.setValue = setValue
+
+    slider:SetScript("OnValueChanged", function(_, value)
+        if row.updating then
+            return
+        end
+        onChange(setValue(value))
+    end)
+    editBox:SetScript("OnEnterPressed", function(self)
+        local value = tonumber(self:GetText())
+        if value then
+            onChange(setValue(value))
+        end
+        self:ClearFocus()
+    end)
+    editBox:SetScript("OnEscapePressed", function(self)
+        self:ClearFocus()
+        refreshSettings()
+    end)
+    return row
+end
+
+local function createSettingsFrame()
+    local panel, templated = createFrameSafe("Frame", UIParent, "BasicFrameTemplateWithInset")
+    panel:SetSize(340, 330)
+    panel:SetPoint("CENTER", UIParent, "CENTER", 0, 120)
+    panel:SetFrameStrata("DIALOG")
+    panel:SetClampedToScreen(true)
+    panel:SetMovable(true)
+    panel:EnableMouse(true)
+    panel:RegisterForDrag("LeftButton")
+    panel:SetScript("OnDragStart", panel.StartMoving)
+    panel:SetScript("OnDragStop", panel.StopMovingOrSizing)
+    if not templated then
+        local bg = panel:CreateTexture(nil, "BACKGROUND")
+        bg:SetAllPoints(panel)
+        bg:SetColorTexture(0.05, 0.05, 0.05, 0.92)
+        local close = createFrameSafe("Button", panel, "UIPanelCloseButton")
+        close:SetSize(24, 24)
+        close:SetPoint("TOPRIGHT", panel, "TOPRIGHT", -2, -2)
+        close:SetScript("OnClick", function() panel:Hide() end)
+    end
+    if _G.UISpecialFrames then
+        _G.HunterRangeBarSettingsFrame = panel
+        table.insert(_G.UISpecialFrames, "HunterRangeBarSettingsFrame")
+    end
+
+    local title = panel:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+    title:SetPoint("TOP", panel, "TOP", 0, -6)
+    title:SetText("Hunter Range Bar – nastavení")
+
+    local function db()
+        HunterRangeBarDB = HunterRangeBarDB or {}
+        return HunterRangeBarDB
+    end
+
+    local halfWidth = math.floor((UIParent:GetWidth() or 2000) / 2)
+    local halfHeight = math.floor((UIParent:GetHeight() or 1200) / 2)
+
+    panel.widthRow = createSettingRow(panel, "Délka (šířka pruhu)", MIN_WIDTH, MAX_WIDTH, -36, function(value)
+        db().width = value
+        db().height = db().height or math.floor(frame:GetHeight() + 0.5)
+        applySize()
+    end)
+    panel.heightRow = createSettingRow(panel, "Výška (tloušťka pruhu)", MIN_HEIGHT, MAX_HEIGHT, -86, function(value)
+        db().height = value
+        db().width = db().width or math.floor(frame:GetWidth() + 0.5)
+        applySize()
+    end)
+    panel.xRow = createSettingRow(panel, "Pozice X (od středu obrazovky)", -halfWidth, halfWidth, -136, function(value)
+        db().x = value
+        restorePosition()
+    end)
+    panel.yRow = createSettingRow(panel, "Pozice Y (od středu obrazovky)", -halfHeight, halfHeight, -186, function(value)
+        db().y = value
+        restorePosition()
+    end)
+
+    local lockCheck, checkTemplated = createFrameSafe("CheckButton", panel, "UICheckButtonTemplate")
+    if not checkTemplated then
+        lockCheck:SetSize(24, 24)
+        lockCheck:SetNormalTexture("Interface\\Buttons\\UI-CheckBox-Up")
+        lockCheck:SetCheckedTexture("Interface\\Buttons\\UI-CheckBox-Check")
+    end
+    lockCheck:SetPoint("TOPLEFT", panel, "TOPLEFT", 16, -236)
+    local lockText = panel:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    lockText:SetPoint("LEFT", lockCheck, "RIGHT", 4, 0)
+    lockText:SetText("Zamknout pozici (nejde přetahovat myší)")
+    lockCheck:SetScript("OnClick", function(self)
+        db().locked = self:GetChecked() and true or false
+    end)
+    panel.lockCheck = lockCheck
+
+    local resetButton = createFrameSafe("Button", panel, "UIPanelButtonTemplate")
+    resetButton:SetSize(140, 24)
+    resetButton:SetPoint("BOTTOMLEFT", panel, "BOTTOMLEFT", 20, 20)
+    resetButton:SetText("Výchozí hodnoty")
+    resetButton:SetScript("OnClick", function()
+        local saved = db()
+        saved.width, saved.height, saved.x, saved.y = nil, nil, 0, -180
+        applySize()
+        restorePosition()
+        refreshSettings()
+    end)
+
+    local closeButton = createFrameSafe("Button", panel, "UIPanelButtonTemplate")
+    closeButton:SetSize(100, 24)
+    closeButton:SetPoint("BOTTOMRIGHT", panel, "BOTTOMRIGHT", -20, 20)
+    closeButton:SetText("Zavřít")
+    closeButton:SetScript("OnClick", function() panel:Hide() end)
+
+    panel:SetScript("OnShow", function() refreshSettings() end)
+    return panel
+end
+
+refreshSettings = function()
+    if not (settingsFrame and settingsFrame:IsShown()) then
+        return
+    end
+    local db = HunterRangeBarDB or {}
+    local width, height = frame:GetSize()
+    settingsFrame.widthRow.setValue(db.width or width)
+    settingsFrame.heightRow.setValue(db.height or height)
+    settingsFrame.xRow.setValue(db.x or 0)
+    settingsFrame.yRow.setValue(db.y or -180)
+    settingsFrame.lockCheck:SetChecked(db.locked == true)
+end
+
+local function toggleSettings()
+    if not settingsFrame then
+        settingsFrame = createSettingsFrame()
+        settingsFrame:Hide()
+    end
+    if settingsFrame:IsShown() then
+        settingsFrame:Hide()
+    else
+        settingsFrame:Show()
+        refreshSettings()
+    end
+end
+
+local function exactDistance()
+    if type(UnitDistanceSquared) ~= "function" then
+        return nil
+    end
+
+    local distanceSquared, checked = UnitDistanceSquared("target")
+    if checked == true and type(distanceSquared) == "number" and distanceSquared >= 0 then
+        return math.sqrt(distanceSquared)
+    end
+end
+
+local function unitMapPosition(unit)
+    if type(UnitPosition) ~= "function" then
+        return nil
+    end
+
+    local ok, y, x, z, instanceID = pcall(UnitPosition, unit)
+    if ok and type(x) == "number" and type(y) == "number" then
+        return x, y, type(z) == "number" and z or 0, instanceID
+    end
+end
+
+local function positionDistance()
+    local px, py, pz, pInstance = unitMapPosition("player")
+    local tx, ty, tz, tInstance = unitMapPosition("target")
+    if not px or not tx or pInstance ~= tInstance then
+        return nil
+    end
+
+    local distance = math.sqrt((tx - px) ^ 2 + (ty - py) ^ 2 + (tz - pz) ^ 2)
+    if distance > 0 then
+        return distance
+    end
+end
+
+local function progressForDistance(distance)
+    return math.max(0, math.min(1, (FAR_RANGE - distance) / (FAR_RANGE - MAX_RANGE)))
+end
+
+local function checkItemRange(itemIDs)
+    local isItemInRange = (C_Item and C_Item.IsItemInRange) or IsItemInRange
+    if type(isItemInRange) ~= "function" then
+        return nil
+    end
+
+    for _, itemID in ipairs(itemIDs) do
+        local ok, result = pcall(function()
+            local inRange = isItemInRange(itemID, "target")
+            if inRange == true or inRange == 1 then
+                return true
+            elseif inRange == false or inRange == 0 then
+                return false
+            end
+        end)
+        if ok and result ~= nil then
+            return result
+        end
+    end
+end
+
+local function checkFallbackRange(check)
+    if check.spellID and C_Spell and type(C_Spell.IsSpellInRange) == "function" then
+        local inRange = C_Spell.IsSpellInRange(check.spellID)
+        if type(inRange) == "boolean" then
+            return inRange
+        end
+    end
+
+    if check.spellName and type(IsSpellInRange) == "function" then
+        local inRange = IsSpellInRange(check.spellName, "target")
+        if inRange == true or inRange == 1 then
+            return true
+        elseif inRange == false or inRange == 0 then
+            return false
+        end
+    end
+
+    if check.interactIndex and type(CheckInteractDistance) == "function" then
+        local inRange = CheckInteractDistance("target", check.interactIndex)
+        if type(inRange) == "boolean" then
+            return inRange
+        elseif inRange == 1 then
+            return true
+        elseif inRange == 0 then
+            return false
+        end
+    end
+end
+
+local function fallbackDistanceBand(hostileTarget)
+    local lowerBound = 0
+    local upperBound = MAX_RANGE
+    local checksUsed = 0
+
+    for _, check in ipairs(FALLBACK_CHECKS) do
+        if not check.friendlyOnly and not check.hostileOnly
+            or (hostileTarget and check.hostileOnly)
+            or (not hostileTarget and check.friendlyOnly)
+        then
+            local inRange = checkFallbackRange(check)
+            if inRange ~= nil then
+                checksUsed = checksUsed + 1
+                if inRange then
+                    upperBound = math.min(upperBound, check.range)
+                else
+                    lowerBound = math.max(lowerBound, check.range)
+                end
+            end
+        end
+    end
+
+    if checksUsed == 0 or lowerBound > upperBound then
+        return nil
+    end
+
+    local estimatedDistance = (lowerBound + upperBound) / 2
+    local progress = math.max(0, math.min(1, 1 - estimatedDistance / MAX_RANGE))
+    return lowerBound, upperBound, progress
+end
+
+local function reportRangeDebug()
+    if not UnitExists("target") then
+        print("Hunter Range Bar: nejprve vyber target.")
+        return
+    end
+
+    print("Hunter Range Bar: diagnostika targetu " .. (UnitName("target") or "?"))
+    if type(UnitDistanceSquared) == "function" then
+        local distanceSquared, checked = UnitDistanceSquared("target")
+        print("UnitDistanceSquared: " .. tostring(distanceSquared) .. ", checked=" .. tostring(checked))
+    else
+        print("UnitDistanceSquared: API není dostupné")
+    end
+
+    local hostileTarget = UnitCanAttack and UnitCanAttack("player", "target")
+    local px, py, _, pInstance = unitMapPosition("player")
+    local tx, ty, _, tInstance = unitMapPosition("target")
+    print(string.format("UnitPosition player: %s, %s (%s)", tostring(px), tostring(py), tostring(pInstance)))
+    print(string.format("UnitPosition target: %s, %s (%s)", tostring(tx), tostring(ty), tostring(tInstance)))
+
+    if hostileTarget then
+        for _, threshold in ipairs(HOSTILE_THRESHOLDS) do
+            local result
+            if threshold.itemIDs then
+                result = checkItemRange(threshold.itemIDs)
+            else
+                result = checkFallbackRange(threshold)
+            end
+            local name = threshold.spellName or "předmět"
+            print(string.format("Hranice %s yd (%s): %s", threshold.range, name, tostring(result)))
+        end
+        print("Na blízko (předměty 5 yd): " .. tostring(checkItemRange(MELEE_ITEMS)))
+        for _, spell in ipairs(MELEE_SPELLS) do
+            print(string.format("Na blízko (%s): %s", spell.spellName, tostring(checkFallbackRange(spell))))
+        end
+        print("Krátký dosah (předměty 10/20 yd): " .. tostring(checkItemRange(SHORT_RANGE_ITEMS)))
+    end
+
+    for _, check in ipairs(FALLBACK_CHECKS) do
+        if not check.friendlyOnly and not check.hostileOnly
+            or (hostileTarget and check.hostileOnly)
+            or (not hostileTarget and check.friendlyOnly)
+        then
+            local result = checkFallbackRange(check)
+            local name = check.spellName or ("interakce " .. check.interactIndex)
+            print(string.format("%s (%s yd): %s", name, check.range, tostring(result)))
+        end
+    end
+end
+
+local function hostileRangeBand()
+    local lowerBound = 0
+    local upperBound
+    local checksUsed = 0
+
+    for _, threshold in ipairs(HOSTILE_THRESHOLDS) do
+        local inRange
+        if threshold.itemIDs then
+            inRange = checkItemRange(threshold.itemIDs)
+        else
+            inRange = checkFallbackRange(threshold)
+        end
+
+        if inRange ~= nil then
+            checksUsed = checksUsed + 1
+            if inRange then
+                upperBound = math.min(upperBound or threshold.range, threshold.range)
+            else
+                lowerBound = math.max(lowerBound, threshold.range)
+            end
+        end
+    end
+
+    if checksUsed == 0 or (upperBound and lowerBound > upperBound) then
+        return nil
+    end
+    return lowerBound, upperBound
+end
+
+-- Estimates the distance inside a known band from how far the player moved since the last band crossing.
+local estimator = {}
+
+local function resetEstimator()
+    estimator = {}
+end
+
+local function estimateDistanceInBand(lowerBound, upperBound, elapsed)
+    if upperBound == nil then
+        resetEstimator()
+        return nil
+    end
+
+    if estimator.lowerBound ~= lowerBound or estimator.upperBound ~= upperBound then
+        local movedOutward = estimator.upperBound ~= nil and lowerBound >= estimator.upperBound
+        estimator.anchorDistance = movedOutward and lowerBound or upperBound
+        estimator.direction = movedOutward and 1 or -1
+        estimator.lowerBound = lowerBound
+        estimator.upperBound = upperBound
+        estimator.travelled = 0
+        estimator.anchorX, estimator.anchorY = unitMapPosition("player")
+    end
+
+    local x, y = unitMapPosition("player")
+    if estimator.anchorX and x then
+        estimator.travelled = math.sqrt((x - estimator.anchorX) ^ 2 + (y - estimator.anchorY) ^ 2)
+    elseif type(GetUnitSpeed) == "function" then
+        estimator.travelled = estimator.travelled + (GetUnitSpeed("player") or 0) * elapsed
+    end
+
+    local estimate = estimator.anchorDistance + estimator.direction * estimator.travelled
+    return math.max(lowerBound, math.min(upperBound, estimate))
+end
+
+local function setTargetProgress(progress)
+    frame.targetProgress = progress
+end
+
+local function setZone(zone)
+    frame.zoneNow = zone
+end
+
+local function meleeStatus()
+    local inRange = checkItemRange(MELEE_ITEMS)
+    if inRange ~= nil then
+        return inRange
+    end
+    for _, spell in ipairs(MELEE_SPELLS) do
+        inRange = checkFallbackRange(spell)
+        if inRange ~= nil then
+            return inRange
+        end
+    end
+end
+
+-- Returns "melee", "dead" or nil (= decide by the normal ranged logic).
+local function closeRangeZone()
+    local arcaneInRange = checkFallbackRange(HOSTILE_THRESHOLDS[1])
+    if arcaneInRange == true then
+        return nil
+    end
+
+    -- Shooting is not possible here: either melee, dead zone or simply beyond 40 yd.
+    if meleeStatus() == true then
+        return "melee"
+    end
+    if arcaneInRange ~= false then
+        return nil
+    end
+
+    local shortRange = checkItemRange(SHORT_RANGE_ITEMS)
+    if shortRange ~= nil then
+        return shortRange and "dead" or nil
+    end
+
+    -- No short range check available: we can only reach the dead zone by stepping out of melee range.
+    local previous = frame.zone
+    if previous == "melee" or previous == "dead" then
+        return "dead"
+    end
+end
+
+local function computeBar(elapsed)
+    elapsed = elapsed or 0
+
+    if not UnitExists("target") then
+        resetEstimator()
+        frame.hasTarget = false
+        setTargetProgress(0)
+        label:SetText("Bez cíle")
+        return
+    end
+
+    frame.hasTarget = true
+
+    local targetName = UnitName("target") or "Target"
+    local hostileTarget = UnitCanAttack and UnitCanAttack("player", "target")
+    local distance = exactDistance() or positionDistance()
+
+    if distance ~= nil then
+        resetEstimator()
+        setTargetProgress(progressForDistance(distance))
+        if hostileTarget and distance <= MELEE_RANGE then
+            setZone("melee")
+            label:SetText(string.format("%s  |  %.1f yd  |  NA BLÍZKO", targetName, distance))
+        elseif hostileTarget and distance < DEAD_ZONE_RANGE then
+            setZone("dead")
+            label:SetText(string.format("%s  |  %.1f yd  |  MRTVÁ ZÓNA", targetName, distance))
+        elseif distance <= MAX_RANGE then
+            setZone("ranged")
+            label:SetText(string.format("%s  |  %.1f yd  |  V DOSAHU", targetName, distance))
+        else
+            label:SetText(string.format(
+                "%s  |  %.1f yd  |  Chybí %.1f yd",
+                targetName,
+                distance,
+                distance - MAX_RANGE
+            ))
+        end
+        return
+    end
+
+    if hostileTarget then
+        local closeZone = closeRangeZone()
+        if closeZone == "melee" then
+            resetEstimator()
+            setTargetProgress(1)
+            setZone("melee")
+            label:SetText(string.format("%s  |  <=%d yd  |  NA BLÍZKO", targetName, MELEE_RANGE))
+            return
+        elseif closeZone == "dead" then
+            resetEstimator()
+            setTargetProgress(1)
+            setZone("dead")
+            label:SetText(string.format("%s  |  <%d yd  |  MRTVÁ ZÓNA", targetName, DEAD_ZONE_RANGE))
+            return
+        end
+
+        local lowerBound, upperBound = hostileRangeBand()
+        if lowerBound == nil then
+            resetEstimator()
+            setTargetProgress(0)
+            label:SetText(string.format("%s  |  ? yd  |  DOSAH NEZJIŠTĚN", targetName))
+        elseif upperBound ~= nil and upperBound <= MAX_RANGE then
+            resetEstimator()
+            setTargetProgress(1)
+            setZone("ranged")
+            label:SetText(string.format("%s  |  <=%.0f yd  |  V DOSAHU", targetName, MAX_RANGE))
+        elseif upperBound == nil then
+            resetEstimator()
+            setTargetProgress(0)
+            label:SetText(string.format("%s  |  >%.0f yd  |  MIMO DOSAHU", targetName, lowerBound))
+        else
+            local estimate = estimateDistanceInBand(lowerBound, upperBound, elapsed)
+            setTargetProgress(progressForDistance(estimate))
+            label:SetText(string.format(
+                "%s  |  ~%.0f yd  |  Chybí ~%.0f yd",
+                targetName,
+                estimate,
+                estimate - MAX_RANGE
+            ))
+        end
+        return
+    end
+
+    resetEstimator()
+    local lowerBound, upperBound, progress = fallbackDistanceBand(hostileTarget)
+    if lowerBound == nil then
+        setTargetProgress(0)
+        label:SetText(string.format("%s  |  ~? yd", targetName))
+        return
+    end
+
+    local rangeText
+    if lowerBound >= MAX_RANGE then
+        rangeText = string.format(">%.0f yd", MAX_RANGE)
+    elseif upperBound <= 5 then
+        rangeText = "<=5 yd"
+    elseif lowerBound > 0 then
+        rangeText = string.format("~%.0f-%.0f yd", lowerBound, upperBound)
+    else
+        rangeText = string.format("~0-%.0f yd", upperBound)
+    end
+
+    setTargetProgress(progress)
+    label:SetText(string.format("%s  |  %s", targetName, rangeText))
+end
+
+local FLASH_DURATION = 0.6
+
+local function applyZoneStyle(zone)
+    local style = ZONE_STYLES[zone or "ranged"]
+    statusBar:SetStatusBarColor(style.fill[1], style.fill[2], style.fill[3], 1)
+    rangeGlow:SetColorTexture(style.glow[1], style.glow[2], style.glow[3], 0.9)
+    rangeFlash:SetColorTexture(style.flash[1], style.flash[2], style.flash[3], 1)
+end
+
+local function updateBar(elapsed)
+    frame.zoneNow = nil
+    computeBar(elapsed)
+    updateMarkIcon()
+
+    local zone = frame.zoneNow
+    if zone ~= frame.zone then
+        applyZoneStyle(zone)
+        if zone then
+            frame.flashStart = GetTime()
+        end
+    end
+    frame.zone = zone
+
+    if zone == "ranged" or zone == "melee" then
+        setBarState("inRange")
+        rangeGlow:Show()
+    elseif zone == "dead" then
+        setBarState("outOfRange")
+        rangeGlow:Show()
+    else
+        setBarState(frame.hasTarget and "outOfRange" or "none")
+        rangeGlow:Hide()
+        frame.flashStart = nil
+    end
+end
+
+local function updateRangeFlash()
+    if not frame.flashStart then
+        rangeFlash:SetAlpha(0)
+        return
+    end
+
+    local t = GetTime() - frame.flashStart
+    if t >= FLASH_DURATION then
+        frame.flashStart = nil
+        rangeFlash:SetAlpha(0)
+        return
+    end
+
+    -- Two quick pulses.
+    rangeFlash:SetAlpha(0.8 * math.abs(math.sin(t / FLASH_DURATION * 2 * math.pi)))
+end
+
+frame:SetScript("OnDragStart", function(self)
+    if not HunterRangeBarDB or not HunterRangeBarDB.locked then
+        self:StartMoving()
+    end
+end)
+
+frame:SetScript("OnDragStop", function(self)
+    self:StopMovingOrSizing()
+    if HunterRangeBarDB then
+        savePosition()
+        restorePosition()
+        refreshSettings()
+    end
+end)
+
+frame:RegisterEvent("PLAYER_LOGIN")
+frame:RegisterEvent("PLAYER_ENTERING_WORLD")
+frame:RegisterEvent("PLAYER_TARGET_CHANGED")
+frame:RegisterUnitEvent("UNIT_SPELLCAST_SUCCEEDED", "player")
+frame:SetScript("OnEvent", function(_, event, ...)
+    if event == "UNIT_SPELLCAST_SUCCEEDED" then
+        local _, _, spellID = ...
+        onPlayerSpellCast(spellID)
+        return
+    end
+    if event == "PLAYER_LOGIN" then
+        restorePosition()
+        if C_Spell and type(C_Spell.EnableSpellRangeCheck) == "function" then
+            for _, check in ipairs(FALLBACK_CHECKS) do
+                if check.spellID then
+                    C_Spell.EnableSpellRangeCheck(check.spellID, true)
+                end
+            end
+            for _, spell in ipairs(MELEE_SPELLS) do
+                pcall(C_Spell.EnableSpellRangeCheck, spell.spellID, true)
+            end
+        end
+        if C_Item and type(C_Item.RequestLoadItemDataByID) == "function" then
+            for _, threshold in ipairs(HOSTILE_THRESHOLDS) do
+                for _, itemID in ipairs(threshold.itemIDs or {}) do
+                    pcall(C_Item.RequestLoadItemDataByID, itemID)
+                end
+            end
+            for _, list in ipairs({ MELEE_ITEMS, SHORT_RANGE_ITEMS }) do
+                for _, itemID in ipairs(list) do
+                    pcall(C_Item.RequestLoadItemDataByID, itemID)
+                end
+            end
+        end
+    end
+    if event == "PLAYER_LOGIN" or event == "PLAYER_ENTERING_WORLD" then
+        applySize()
+    end
+    if event == "PLAYER_TARGET_CHANGED" then
+        resetEstimator()
+        updateBar(0)
+        frame.displayedProgress = frame.targetProgress or 0
+        statusBar:SetValue(frame.displayedProgress)
+        return
+    end
+    updateBar(0)
+end)
+
+frame:SetScript("OnUpdate", function(self, elapsed)
+    self.elapsed = (self.elapsed or 0) + elapsed
+    if self.elapsed >= UPDATE_INTERVAL then
+        local checkElapsed = self.elapsed
+        self.elapsed = 0
+        updateBar(checkElapsed)
+    end
+
+    local targetProgress = self.targetProgress or 0
+    local displayedProgress = self.displayedProgress or 0
+    displayedProgress = displayedProgress
+        + (targetProgress - displayedProgress) * math.min(1, elapsed * ANIMATION_SPEED)
+    if math.abs(targetProgress - displayedProgress) < 0.001 then
+        displayedProgress = targetProgress
+    end
+    self.displayedProgress = displayedProgress
+    statusBar:SetValue(displayedProgress)
+    updateRangeFlash()
+    updateCooldownIcons()
+end)
+
+SLASH_HUNTERRANGEBAR1 = "/hrb"
+SlashCmdList.HUNTERRANGEBAR = function(message)
+    local command = strtrim and strtrim(string.lower(message or "")) or string.lower(message or "")
+    if command == "" or command == "config" or command == "nastaveni" then
+        toggleSettings()
+    elseif command == "lock" or command == "unlock" then
+        HunterRangeBarDB = HunterRangeBarDB or {}
+        if command == "unlock" then
+            HunterRangeBarDB.locked = false
+        else
+            HunterRangeBarDB.locked = not HunterRangeBarDB.locked
+        end
+        print("Hunter Range Bar: " .. (HunterRangeBarDB.locked and "zamčeno" or "odemčeno"))
+        refreshSettings()
+    elseif command == "reset" then
+        HunterRangeBarDB = HunterRangeBarDB or {}
+        HunterRangeBarDB.x = 0
+        HunterRangeBarDB.y = -180
+        restorePosition()
+        refreshSettings()
+        print("Pozice Hunter Range Bar byla obnovena.")
+    elseif command == "debug" then
+        reportRangeDebug()
+    elseif command == "clear" then
+        clearStack()
+        print("Sloupec použitých schopností byl vyčištěn.")
+    else
+        print("Příkazy: /hrb (nastavení), /hrb lock, /hrb unlock, /hrb reset, /hrb debug, /hrb clear, /hrb seznam")
+    end
+end
+
+-- Entry in Esc > Options > AddOns that opens the settings window.
+if Settings and type(Settings.RegisterCanvasLayoutCategory) == "function" and type(Settings.RegisterAddOnCategory) == "function" then
+    local optionsPanel = CreateFrame("Frame")
+    optionsPanel.name = "Hunter Range Bar"
+    local optionsTitle = optionsPanel:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
+    optionsTitle:SetPoint("TOPLEFT", optionsPanel, "TOPLEFT", 16, -16)
+    optionsTitle:SetText("Hunter Range Bar")
+    local openButton = createFrameSafe("Button", optionsPanel, "UIPanelButtonTemplate")
+    openButton:SetSize(180, 24)
+    openButton:SetPoint("TOPLEFT", optionsTitle, "BOTTOMLEFT", 0, -12)
+    openButton:SetText("Otevřít nastavení")
+    openButton:SetScript("OnClick", function()
+        if HideUIPanel and _G.SettingsPanel then
+            HideUIPanel(_G.SettingsPanel)
+        end
+        if not (settingsFrame and settingsFrame:IsShown()) then
+            toggleSettings()
+        end
+    end)
+    pcall(function()
+        local category = Settings.RegisterCanvasLayoutCategory(optionsPanel, "Hunter Range Bar")
+        Settings.RegisterAddOnCategory(category)
+    end)
+end
+
+-- Clickable list of every enemy the player targets within 100 yd, stacked upward left of the bar.
+-- One row per enemy (by GUID); the row body is the enemy's health bar. No row limit.
+-- Left click targets the enemy again (/targetexact by name), right click removes it from the list.
+-- Dead enemies and enemies beyond 100 yd disappear at once. Secure buttons cannot be changed in combat:
+-- enemies targeted in combat appear as dimmed rows (clickable after combat) and the list closes up after combat.
+do
+    local BUTTON_WIDTH, BUTTON_HEIGHT, BUTTON_GAP = 214, 22, 2
+    local SIDE = BUTTON_HEIGHT -- pet button (left) and mark button (right) are square
+    local DISTANCE_WIDTH = 30
+    local BAR_LEFT = SIDE + 4
+    local BAR_WIDTH = BUTTON_WIDTH - BAR_LEFT - DISTANCE_WIDTH - SIDE - 1
+    local PET_ICON = "Interface\\Icons\\Ability_Hunter_Pet_Cat"
+    local SKULL, CROSS = 8, 7
+    local MARK_ICON_ROOM = 39 + 8 -- space kept free for the Hunter's Mark icon left of the bar
+    local ROW = BUTTON_HEIGHT + BUTTON_GAP
+    local FAR_CHECKS = 3 -- consecutive >100 yd checks (0.2 s apart) before an enemy is dropped
+    local ARCANE_SHOT_ID = 3044
+    local ITEMS_45 = HOSTILE_THRESHOLDS[2].itemIDs
+    local ITEMS_100 = HOSTILE_THRESHOLDS[3].itemIDs
+
+    local SCAN_UNITS = { "target", "mouseover", "focus", "targettarget", "pettarget" }
+    for index = 1, 40 do
+        table.insert(SCAN_UNITS, "nameplate" .. index)
+    end
+
+    local function inCombat()
+        return type(InCombatLockdown) == "function" and InCombatLockdown()
+    end
+
+    local list = CreateFrame("Frame", "HunterRangeBarTargetList", UIParent)
+    list:SetSize(BUTTON_WIDTH, BUTTON_HEIGHT)
+    list:SetFrameStrata("MEDIUM")
+    list:SetPoint("BOTTOMLEFT", UIParent, "BOTTOMLEFT", 0, 0)
+
+    local entries = {}
+    local layout
+    local needsLayout = false
+
+    -- Health colour by remaining health; works with secret values (evaluated by the game).
+    local healthCurve
+    pcall(function()
+        healthCurve = C_CurveUtil.CreateColorCurve()
+        healthCurve:SetType(Enum.LuaCurveType.Linear)
+        healthCurve:AddPoint(0, CreateColor(0.85, 0.1, 0.1))
+        healthCurve:AddPoint(0.5, CreateColor(0.9, 0.8, 0.1))
+        healthCurve:AddPoint(1, CreateColor(0.15, 0.75, 0.1))
+    end)
+    local percentCurve = CurveConstants and CurveConstants.ScaleTo100
+
+    local function squareIcon(row, layer)
+        local icon = row:CreateTexture(nil, layer)
+        icon:SetSize(SIDE - 2, SIDE - 2)
+        return icon
+    end
+
+    -- Row: [pet][range stripe][health bar: name ... %][distance][raid mark]
+    local function decorate(row)
+        row:SetSize(BUTTON_WIDTH, BUTTON_HEIGHT)
+
+        row.edge = row:CreateTexture(nil, "BACKGROUND", nil, -1)
+        row.edge:SetPoint("TOPLEFT", row, "TOPLEFT", -1, 1)
+        row.edge:SetPoint("BOTTOMRIGHT", row, "BOTTOMRIGHT", 1, -1)
+        row.edge:SetColorTexture(0, 0, 0, 1)
+        row.background = row:CreateTexture(nil, "BACKGROUND")
+        row.background:SetAllPoints(row)
+        row.background:SetColorTexture(0.08, 0.08, 0.08, 0.95)
+
+        row.petIcon = squareIcon(row, "ARTWORK")
+        row.petIcon:SetPoint("LEFT", row, "LEFT", 1, 0)
+        row.petIcon:SetTexture(PET_ICON)
+        row.petIcon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
+
+        -- Stripe: green = Arcane Shot range, yellow = up to 45 yd, red = up to 100 yd, grey = unknown.
+        row.rangeStripe = row:CreateTexture(nil, "ARTWORK")
+        row.rangeStripe:SetPoint("TOPLEFT", row, "TOPLEFT", SIDE, 0)
+        row.rangeStripe:SetPoint("BOTTOMLEFT", row, "BOTTOMLEFT", SIDE, 0)
+        row.rangeStripe:SetWidth(3)
+
+        row.healthBack = row:CreateTexture(nil, "BORDER")
+        row.healthBack:SetPoint("TOPLEFT", row, "TOPLEFT", BAR_LEFT, -1)
+        row.healthBack:SetSize(BAR_WIDTH, BUTTON_HEIGHT - 2)
+        row.healthBack:SetColorTexture(0.25, 0.04, 0.04, 1)
+
+        -- StatusBar accepts the secret health values of this client; it does not take mouse clicks.
+        row.health = CreateFrame("StatusBar", nil, row)
+        row.health:SetAllPoints(row.healthBack)
+        row.health:SetStatusBarTexture("Interface\\TargetingFrame\\UI-StatusBar")
+        row.health:SetMinMaxValues(0, 1)
+        row.health:SetValue(1)
+
+        row.over = CreateFrame("Frame", nil, row)
+        row.over:SetAllPoints(row)
+        row.over:SetFrameLevel(row.health:GetFrameLevel() + 1)
+
+        row.nameText = row.over:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+        row.nameText:SetPoint("LEFT", row.healthBack, "LEFT", 4, 0)
+        row.nameText:SetPoint("RIGHT", row.healthBack, "RIGHT", -34, 0)
+        row.nameText:SetJustifyH("LEFT")
+        if row.nameText.SetWordWrap then
+            row.nameText:SetWordWrap(false)
+        end
+        row.healthText = row.over:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+        row.healthText:SetPoint("RIGHT", row.healthBack, "RIGHT", -3, 0)
+        row.healthText:SetJustifyH("RIGHT")
+
+        row.distanceBox = row:CreateTexture(nil, "BORDER")
+        row.distanceBox:SetPoint("TOPLEFT", row.healthBack, "TOPRIGHT", 1, 1)
+        row.distanceBox:SetSize(DISTANCE_WIDTH, BUTTON_HEIGHT)
+        row.distanceBox:SetColorTexture(0.12, 0.12, 0.12, 1)
+        row.rangeText = row.over:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+        row.rangeText:SetPoint("CENTER", row.distanceBox, "CENTER", 0, 0)
+
+        row.markSlot = row:CreateTexture(nil, "BORDER")
+        row.markSlot:SetPoint("TOPRIGHT", row, "TOPRIGHT", 0, 0)
+        row.markSlot:SetSize(SIDE, SIDE)
+        row.markSlot:SetColorTexture(0.16, 0.16, 0.16, 1)
+        row.raidIcon = row.over:CreateTexture(nil, "OVERLAY")
+        row.raidIcon:SetPoint("CENTER", row.markSlot, "CENTER", 0, 0)
+        row.raidIcon:SetSize(SIDE - 4, SIDE - 4)
+        row.raidIcon:SetTexture("Interface\\TargetingFrame\\UI-RaidTargetingIcons")
+
+        row.targetGlow = row.over:CreateTexture(nil, "OVERLAY", nil, 1)
+        row.targetGlow:SetPoint("TOPLEFT", row, "TOPLEFT", -2, 2)
+        row.targetGlow:SetPoint("BOTTOMRIGHT", row, "BOTTOMRIGHT", 2, -2)
+        row.targetGlow:SetColorTexture(1, 0.82, 0, 0.3)
+        row.targetGlow:SetBlendMode("ADD")
+        row.targetGlow:Hide()
+
+        row.hover = row.over:CreateTexture(nil, "OVERLAY", nil, 2)
+        row.hover:SetAllPoints(row)
+        row.hover:SetColorTexture(1, 1, 1, 0.1)
+        row.hover:Hide()
+        row:HookScript("OnEnter", function() row.hover:Show() end)
+        row:HookScript("OnLeave", function() row.hover:Hide() end)
+        row:Hide()
+        return row
+    end
+
+    -- Small secure button over the pet / mark square of a clickable row.
+    local function addSideButton(row, anchorPoint, tooltip, name)
+        local ok, button = pcall(CreateFrame, "Button", name, row, "SecureActionButtonTemplate")
+        if not ok or not button then
+            return nil
+        end
+        button:SetSize(SIDE, SIDE)
+        button:SetPoint(anchorPoint, row, anchorPoint, 0, 0)
+        button:SetFrameLevel(row.over:GetFrameLevel() + 2)
+        button:RegisterForClicks("LeftButtonUp", "RightButtonUp")
+        -- Add-on secure buttons otherwise follow the ActionButtonUseKeyDown CVar and act only on mouse down.
+        button:SetAttribute("useOnKeyDown", false)
+        button:SetAttribute("type", "macro")
+        local highlight = button:CreateTexture(nil, "HIGHLIGHT")
+        highlight:SetAllPoints(button)
+        highlight:SetColorTexture(1, 1, 1, 0.25)
+        button:SetScript("OnEnter", function(self)
+            if GameTooltip then
+                GameTooltip:SetOwner(self, "ANCHOR_TOP")
+                GameTooltip:SetText(tooltip)
+                GameTooltip:Show()
+            end
+        end)
+        button:SetScript("OnLeave", function()
+            if GameTooltip then
+                GameTooltip:Hide()
+            end
+        end)
+        return button
+    end
+    local function placeRow(row, slot, entry)
+        row.entry = entry
+        entry.row = row
+        entry.slot = slot
+        row:ClearAllPoints()
+        row:SetPoint("BOTTOMLEFT", list, "BOTTOMLEFT", 0, (slot - 1) * ROW)
+        row:SetAlpha(1)
+        row:Show()
+    end
+
+    -- Takes the row away from the entry. Secure rows cannot be hidden in combat, so they only become invisible.
+    local function releaseRow(entry)
+        local row = entry.row
+        entry.row = nil
+        if not row then
+            return
+        end
+        row.entry = nil
+        if row.secure and inCombat() then
+            row:SetAlpha(0)
+        else
+            row:Hide()
+        end
+    end
+
+    local function dropEntry(entry)
+        if not entry then
+            return
+        end
+        for index, other in ipairs(entries) do
+            if other == entry then
+                table.remove(entries, index)
+                break
+            end
+        end
+        releaseRow(entry)
+        layout()
+    end
+
+    -- Right click on a mark button gives the next mark (cross, square, moon, …) that is not in use yet.
+    -- The choice runs in a secure snippet so it works in combat too; marks in use are kept as attributes
+    -- "used1".."used7" on the protected header and re-read from the game out of combat when readable.
+    local POOL_SNIPPET = [[
+        if button ~= "RightButton" or IsShiftKeyDown() then
+            return
+        end
+        local current = self:GetAttribute("hrb-mark")
+        if current then
+            owner:SetAttribute("used" .. current, nil)
+        end
+        local mark
+        for index = 7, 1, -1 do
+            if index ~= current and not owner:GetAttribute("used" .. index) then
+                mark = index
+                break
+            end
+        end
+        if not mark then
+            for index = 1, 7 do
+                owner:SetAttribute("used" .. index, nil)
+            end
+            mark = (current == 7) and 6 or 7
+        end
+        owner:SetAttribute("used" .. mark, true)
+        self:SetAttribute("hrb-mark", mark)
+        self:SetAttribute("macrotext2", (self:GetAttribute("hrb-pre") or "") .. "/tm " .. mark .. (self:GetAttribute("hrb-post") or ""))
+    ]]
+    local markPool
+    do
+        local ok, header = pcall(CreateFrame, "Frame", "HunterRangeBarMarkPool", UIParent, "SecureHandlerBaseTemplate")
+        if ok and header and type(SecureHandlerWrapScript) == "function" then
+            markPool = header
+        end
+    end
+
+    local function wrapMarkButton(markButton)
+        if markPool and markButton then
+            local ok = pcall(SecureHandlerWrapScript, markButton, "OnClick", markPool, POOL_SNIPPET)
+            markButton.pooled = ok
+        end
+    end
+
+    -- Dice button left of the first row: hands out skull, cross, square, … to the listed enemies in random order.
+    -- A secure snippet shuffles the rows on every click (works in combat too) and writes "/tm !N" into each row's
+    -- mark button as macrotext4; the dice macro then clicks those mark buttons with Button4.
+    local RANDOM_SNIPPET = [[
+        local count = owner:GetAttribute("count") or 0
+        local order = newtable()
+        for index = 1, count do
+            order[index] = index
+        end
+        for index = count, 2, -1 do
+            local other = math.random(index)
+            order[index], order[other] = order[other], order[index]
+        end
+        for index = 1, 7 do
+            owner:SetAttribute("used" .. index, nil)
+        end
+        for slot = 1, count do
+            local markButton = owner:GetFrameRef("m" .. order[slot])
+            local mark = 9 - slot
+            if markButton then
+                if mark >= 1 then
+                    markButton:SetAttribute("macrotext4", (markButton:GetAttribute("hrb-pre") or "") .. "/tm !" .. mark .. (markButton:GetAttribute("hrb-post") or ""))
+                    if mark <= 7 then
+                        markButton:SetAttribute("hrb-mark", mark)
+                        owner:SetAttribute("used" .. mark, true)
+                    else
+                        markButton:SetAttribute("hrb-mark", nil)
+                    end
+                else
+                    markButton:SetAttribute("macrotext4", nil)
+                end
+            end
+        end
+    ]]
+    local diceButton
+    if markPool then
+        local ok, button = pcall(CreateFrame, "Button", "HunterRangeBarMarkDice", list, "SecureActionButtonTemplate")
+        if ok and button then
+            diceButton = button
+            button:SetSize(BUTTON_HEIGHT, BUTTON_HEIGHT)
+            button:SetPoint("BOTTOMRIGHT", list, "BOTTOMLEFT", -4, 0)
+            button:RegisterForClicks("LeftButtonUp")
+            button:SetAttribute("useOnKeyDown", false)
+            button:SetAttribute("type", "macro")
+            local edge = button:CreateTexture(nil, "BACKGROUND")
+            edge:SetPoint("TOPLEFT", button, "TOPLEFT", -1, 1)
+            edge:SetPoint("BOTTOMRIGHT", button, "BOTTOMRIGHT", 1, -1)
+            edge:SetColorTexture(0, 0, 0, 1)
+            local back = button:CreateTexture(nil, "BORDER")
+            back:SetAllPoints(button)
+            back:SetColorTexture(0.12, 0.12, 0.12, 0.95)
+            local icon = button:CreateTexture(nil, "ARTWORK")
+            icon:SetPoint("TOPLEFT", button, "TOPLEFT", 1, -1)
+            icon:SetPoint("BOTTOMRIGHT", button, "BOTTOMRIGHT", -1, 1)
+            icon:SetTexture("Interface\\Buttons\\UI-GroupLoot-Dice-Up")
+            local highlight = button:CreateTexture(nil, "HIGHLIGHT")
+            highlight:SetAllPoints(button)
+            highlight:SetColorTexture(1, 1, 1, 0.25)
+            button:SetScript("OnEnter", function(self)
+                if GameTooltip then
+                    GameTooltip:SetOwner(self, "ANCHOR_TOP")
+                    GameTooltip:SetText("Náhodně rozdat značky: lebka, kříž, čtverec, …\n(každý nepřítel v seznamu jednu, nejvýš 8)")
+                    GameTooltip:Show()
+                end
+            end)
+            button:SetScript("OnLeave", function()
+                if GameTooltip then
+                    GameTooltip:Hide()
+                end
+            end)
+            if not pcall(SecureHandlerWrapScript, button, "OnClick", markPool, RANDOM_SNIPPET) then
+                diceButton = nil
+                button:Hide()
+            else
+                button:Hide()
+            end
+        end
+    end
+
+    -- Clickable secure rows (created and changed only out of combat) and plain rows for combat.
+    local buttons, plainRows = {}, {}
+    local canClick = true
+
+    local function getButton(index)
+        if buttons[index] then
+            return buttons[index]
+        end
+        local ok, button = pcall(CreateFrame, "Button", "HunterRangeBarTargetButton" .. index, list, "SecureActionButtonTemplate")
+        if ok and button then
+            button.secure = true
+        else
+            canClick = false
+            button = CreateFrame("Button", nil, list)
+        end
+        decorate(button)
+        if button.secure then
+            button:SetAttribute("useOnKeyDown", false)
+            button.petButton = addSideButton(button, "LEFT", "Pet útočí na tento cíl (tvůj target se nezmění)")
+            button.markButton = addSideButton(button, "RIGHT",
+                "Levé: lebka\nPravé: další volná značka (kříž, čtverec, měsíc…), další klik = další volná\nShift+klik: zrušit značku",
+                "HRBM" .. index)
+            -- The dice macro invokes this button as Button4; SecureActionButton resolves
+            -- the action type by that suffix, independently from the default mouse buttons.
+            button.markButton:SetAttribute("type4", "macro")
+            button.markButton:RegisterForClicks("LeftButtonUp", "RightButtonUp", "Button4Up")
+            wrapMarkButton(button.markButton)
+        end
+        button:RegisterForClicks("LeftButtonUp", "RightButtonUp")
+        button:SetScript("PostClick", function(self, mouseButton)
+            if mouseButton == "RightButton" then
+                dropEntry(self.entry)
+            end
+        end)
+        buttons[index] = button
+        return button
+    end
+
+    local function getPlainRow()
+        for _, row in ipairs(plainRows) do
+            if not row.entry then
+                return row
+            end
+        end
+        local row = decorate(CreateFrame("Frame", nil, list))
+        row:EnableMouse(true)
+        -- Above the secure rows, so it also covers an invisible secure row of a removed enemy.
+        row:SetFrameLevel(list:GetFrameLevel() + 10)
+        row:SetScript("OnMouseUp", function(self, mouseButton)
+            if mouseButton == "RightButton" then
+                dropEntry(self.entry)
+            end
+        end)
+        table.insert(plainRows, row)
+        return row
+    end
+
+    local function matchesGuid(unit, guid)
+        local ok, same = pcall(function()
+            local unitGuid = UnitGUID(unit)
+            return unitGuid ~= nil and not isSecret(unitGuid) and unitGuid == guid
+        end)
+        return ok and same == true
+    end
+
+    -- Pet and mark buttons briefly target the enemy, act and return to the previous target.
+    -- If the enemy already is the target they act directly (attributes can only follow this out of combat).
+    local function setRowMacros(button, entry)
+        local around = "%s"
+        if not matchesGuid("target", entry.guid) then
+            around = "/targetexact " .. entry.name .. "\n%s\n/targetlasttarget"
+        end
+        button:SetAttribute("type1", "macro")
+        button:SetAttribute("macrotext1", "/targetexact " .. entry.name)
+        if button.petButton then
+            button.petButton:SetAttribute("macrotext", string.format(around, "/petattack"))
+        end
+        if button.markButton then
+            local pre, post = around:match("^(.-)%%s(.*)$")
+            button.markButton:SetAttribute("hrb-pre", pre)
+            button.markButton:SetAttribute("hrb-post", post)
+            button.markButton:SetAttribute("macrotext1", string.format(around, "/tm " .. SKULL))
+            -- Fallback without the secure snippet: plain cross.
+            button.markButton:SetAttribute("macrotext2", string.format(around, "/tm " .. CROSS))
+            button.markButton:SetAttribute("shift-macrotext1", string.format(around, "/tm 0"))
+            button.markButton:SetAttribute("shift-macrotext2", string.format(around, "/tm 0"))
+        end
+    end
+
+    local function readableMark(entry)
+        local mark = entry and entry.mark
+        if mark ~= nil and not isSecret(mark) and type(mark) == "number" then
+            return mark
+        end
+    end
+
+    -- Out of combat: rebuild the pool of used marks from the marks the game shows (when readable)
+    -- and the marks this addon handed out to rows that are still listed.
+    local function syncMarkPool()
+        if not markPool or inCombat() then
+            return
+        end
+        local used = {}
+        for _, button in ipairs(buttons) do
+            local markButton = button.markButton
+            if markButton then
+                local live = button.entry and button:IsShown()
+                local known = live and readableMark(button.entry)
+                local given = markButton:GetAttribute("hrb-mark")
+                if not live then
+                    given = nil
+                elseif known then
+                    given = (known >= 1 and known <= 7) and known or nil
+                end
+                markButton:SetAttribute("hrb-mark", given)
+                if given then
+                    used[given] = true
+                end
+            end
+        end
+        for _, entry in ipairs(entries) do
+            local known = readableMark(entry)
+            if known then
+                used[known] = true
+            end
+        end
+        for index = 1, 7 do
+            markPool:SetAttribute("used" .. index, used[index] or nil)
+        end
+
+        -- Rows the dice button may mark (the first 8 listed rows with a mark button).
+        if diceButton then
+            local count, clicks = 0, {}
+            for index, button in ipairs(buttons) do
+                if index <= 8 and button.markButton and button.entry and button:IsShown() then
+                    count = count + 1
+                    markPool:SetFrameRef("m" .. count, button.markButton)
+                    table.insert(clicks, "/click HRBM" .. index .. " Button4")
+                end
+            end
+            markPool:SetAttribute("count", count)
+            diceButton:SetAttribute("macrotext", table.concat(clicks, "\n"))
+            diceButton:SetShown(count > 0)
+        end
+    end
+    layout = function()
+        if inCombat() then
+            needsLayout = true
+            return
+        end
+        needsLayout = false
+        for _, row in ipairs(plainRows) do
+            row.entry = nil
+            row:Hide()
+        end
+        for index, entry in ipairs(entries) do
+            local button = getButton(index)
+            if canClick then
+                setRowMacros(button, entry)
+            end
+            entry.pending = nil
+            placeRow(button, index, entry)
+        end
+        for index = #entries + 1, #buttons do
+            buttons[index].entry = nil
+            buttons[index]:Hide()
+        end
+        syncMarkPool()
+    end
+
+    local function findUnit(guid)
+        if not guid then
+            return nil
+        end
+        for _, unit in ipairs(SCAN_UNITS) do
+            if matchesGuid(unit, guid) then
+                return unit
+            end
+        end
+    end
+
+    local function itemInRange(itemIDs, unit)
+        local isItemInRange = (C_Item and C_Item.IsItemInRange) or IsItemInRange
+        if type(isItemInRange) ~= "function" then
+            return nil
+        end
+        for _, itemID in ipairs(itemIDs) do
+            local ok, inRange = pcall(isItemInRange, itemID, unit)
+            if ok and not isSecret(inRange) then
+                if inRange == true or inRange == 1 then
+                    return true
+                elseif inRange == false or inRange == 0 then
+                    return false
+                end
+            end
+        end
+    end
+
+    -- Returns text, r, g, b and whether the enemy is confirmed beyond 100 yd.
+    local function unitRange(unit)
+        if C_Spell and type(C_Spell.IsSpellInRange) == "function" then
+            local ok, inRange = pcall(C_Spell.IsSpellInRange, ARCANE_SHOT_ID, unit)
+            if ok and not isSecret(inRange) and inRange == true then
+                return "40", 0.25, 1, 0.3, false
+            end
+        end
+        if itemInRange(ITEMS_45, unit) then
+            return "45", 1, 0.85, 0.2, false
+        end
+        local in100 = itemInRange(ITEMS_100, unit)
+        if in100 then
+            return "100", 1, 0.3, 0.2, false
+        elseif in100 == false then
+            return ">100", 0.5, 0.5, 0.5, true
+        end
+        return "?", 0.6, 0.6, 0.6, false
+    end
+
+    -- Stores health of a visible unit in the entry. The values may be secret: they are only handed
+    -- to the StatusBar / FontString, which accept them, never compared or calculated with.
+    local function captureHealth(entry, unit)
+        local ok, health, maxHealth = pcall(function()
+            return UnitHealth(unit), UnitHealthMax(unit)
+        end)
+        if not ok or health == nil or maxHealth == nil then
+            return
+        end
+        entry.hpCur, entry.hpMax = health, maxHealth
+        entry.hpColor, entry.hpText = nil, nil
+
+        if not isSecret(health) and not isSecret(maxHealth) then
+            if maxHealth > 0 then
+                local fraction = math.max(0, math.min(1, health / maxHealth))
+                if fraction > 0.5 then
+                    entry.hpColor = { (1 - fraction) * 2, 0.75, 0.1 }
+                else
+                    entry.hpColor = { 0.85, fraction * 1.5, 0.1 }
+                end
+                entry.hpText = string.format("%d%%", math.floor(fraction * 100 + 0.5))
+            end
+            return
+        end
+
+        if type(UnitHealthPercent) == "function" then
+            if healthCurve then
+                local okColor, color = pcall(UnitHealthPercent, unit, true, healthCurve)
+                if okColor and color then
+                    local okRGB, r, g, b = pcall(color.GetRGB, color)
+                    if okRGB then
+                        entry.hpColor = { r, g, b }
+                    end
+                end
+            end
+            local okPercent, percent = pcall(UnitHealthPercent, unit, true, percentCurve)
+            if okPercent and percent ~= nil then
+                local okText, text = pcall(string.format, percentCurve and "%.0f%%" or "%.2f", percent)
+                if okText then
+                    entry.hpText = text
+                end
+            end
+        end
+    end
+
+    -- The mark index may be a secret value: it is only checked against nil and handed to the texture.
+    local function readMark(unit)
+        local ok, mark = pcall(GetRaidTargetIndex, unit)
+        if ok and mark ~= nil then
+            return mark
+        end
+        return nil
+    end
+
+    local function isDead(unit)
+        local ok, dead = pcall(function()
+            local value = UnitIsDead(unit)
+            return not isSecret(value) and value == true
+        end)
+        return ok and dead == true
+    end
+
+    local function drawRow(row, entry, unit, text, r, g, b)
+        row.nameText:SetText(entry.name)
+        row:SetAlpha(entry.pending and 0.6 or (unit and 1 or 0.75))
+        row.rangeText:SetText(entry.pending and "⌛" or text)
+        row.rangeText:SetTextColor(r, g, b)
+        row.rangeStripe:SetColorTexture(r, g, b, 1)
+
+        local shown = entry.hpMax ~= nil and pcall(function()
+            row.health:SetMinMaxValues(0, entry.hpMax)
+            row.health:SetValue(entry.hpCur)
+        end)
+        if shown then
+            local color = entry.hpColor
+            if not (color and pcall(row.health.SetStatusBarColor, row.health, color[1], color[2], color[3])) then
+                row.health:SetStatusBarColor(0.15, 0.75, 0.1)
+            end
+            if not (entry.hpText and pcall(row.healthText.SetText, row.healthText, entry.hpText)) then
+                row.healthText:SetText("")
+            end
+        else
+            -- Health not known yet: grey full bar.
+            row.health:SetMinMaxValues(0, 1)
+            row.health:SetValue(1)
+            row.health:SetStatusBarColor(0.3, 0.3, 0.3)
+            row.healthText:SetText("")
+        end
+        row.targetGlow:SetShown(matchesGuid("target", entry.guid))
+
+        local hasPet = UnitExists("pet")
+        row.petIcon:SetDesaturated(not hasPet)
+        row.petIcon:SetAlpha(hasPet and 1 or 0.4)
+
+        -- Without a mark the slot shows a faint skull as a hint for the mark button.
+        local marked = entry.mark ~= nil and pcall(row.raidIcon.SetSpriteSheetCell, row.raidIcon, entry.mark, 4, 4)
+        if not marked then
+            pcall(row.raidIcon.SetSpriteSheetCell, row.raidIcon, SKULL, 4, 4)
+        end
+        row.raidIcon:SetAlpha(marked and 1 or 0.2)
+    end
+
+    local function updateEntry(entry)
+        local unit = findUnit(entry.guid)
+        local text, r, g, b = "?", 0.6, 0.6, 0.6
+        if unit then
+            if isDead(unit) then
+                dropEntry(entry)
+                return
+            end
+            local beyond
+            text, r, g, b, beyond = unitRange(unit)
+            if beyond then
+                entry.farChecks = (entry.farChecks or 0) + 1
+                if entry.farChecks >= FAR_CHECKS then
+                    dropEntry(entry)
+                    return
+                end
+            else
+                entry.farChecks = 0
+            end
+            captureHealth(entry, unit)
+            entry.mark = readMark(unit)
+        end
+        if entry.row then
+            drawRow(entry.row, entry, unit, text, r, g, b)
+        end
+    end
+
+    -- The pet / mark macros depend on which row is the current target; they can only change out of combat.
+    local function refreshMacros()
+        if inCombat() or not canClick then
+            return
+        end
+        for _, button in ipairs(buttons) do
+            if button.entry and button:IsShown() then
+                setRowMacros(button, button.entry)
+            end
+        end
+        syncMarkPool()
+    end
+
+    local function addCurrentTarget()
+        refreshMacros()
+        local ok, data = pcall(function()
+            if not UnitExists("target") then
+                return nil
+            end
+            local attackable = UnitCanAttack("player", "target")
+            if isSecret(attackable) or not attackable or isDead("target") then
+                return nil
+            end
+            local name, guid = UnitName("target"), UnitGUID("target")
+            if type(name) ~= "string" or isSecret(name) or name == "" then
+                return nil
+            end
+            if isSecret(guid) then
+                guid = nil
+            end
+            return { name = name, guid = guid }
+        end)
+        if not ok or not data then
+            return
+        end
+        local _, _, _, _, beyond = unitRange("target")
+        if beyond then
+            return
+        end
+        captureHealth(data, "target")
+        data.mark = readMark("target")
+
+        -- One row per enemy (GUID); without a GUID fall back to the name.
+        for _, entry in ipairs(entries) do
+            if (data.guid and entry.guid == data.guid) or (not data.guid and not entry.guid and entry.name == data.name) then
+                if data.hpMax ~= nil then
+                    entry.hpCur, entry.hpMax, entry.hpColor, entry.hpText = data.hpCur, data.hpMax, data.hpColor, data.hpText
+                end
+                entry.mark = data.mark
+                entry.farChecks = 0
+                refreshMacros()
+                return
+            end
+        end
+
+        table.insert(entries, data)
+        if inCombat() then
+            -- Lowest free slot, possibly where a removed enemy's (now invisible) secure row stays until combat ends.
+            local slot = 1
+            local taken = true
+            while taken do
+                taken = false
+                for _, entry in ipairs(entries) do
+                    if entry.slot == slot then
+                        taken = true
+                        slot = slot + 1
+                        break
+                    end
+                end
+            end
+            data.pending = true
+            placeRow(getPlainRow(), slot, data)
+        else
+            layout()
+        end
+        updateEntry(data)
+    end
+
+    local pendingSync = false
+    local function syncPosition()
+        if inCombat() then
+            pendingSync = true
+            return
+        end
+        pendingSync = false
+        -- Absolute coordinates (secure rows must not be anchored to the movable bar):
+        -- left of the bar, the first row level with the bar's bottom edge, growing upwards.
+        local left, bottom = frame:GetLeft(), frame:GetBottom()
+        if left and bottom then
+            list:ClearAllPoints()
+            list:SetPoint("BOTTOMRIGHT", UIParent, "BOTTOMLEFT", left - MARK_ICON_ROOM, bottom)
+        end
+    end
+
+    hooksecurefunc(frame, "SetPoint", syncPosition)
+    frame:HookScript("OnSizeChanged", syncPosition)
+    frame:HookScript("OnDragStop", syncPosition)
+
+    local events = CreateFrame("Frame")
+    events:RegisterEvent("PLAYER_ENTERING_WORLD")
+    events:RegisterEvent("PLAYER_REGEN_ENABLED")
+    events:RegisterEvent("PLAYER_TARGET_CHANGED")
+    events:SetScript("OnEvent", function(_, event)
+        if event == "PLAYER_TARGET_CHANGED" then
+            addCurrentTarget()
+            return
+        end
+        if event == "PLAYER_ENTERING_WORLD" or pendingSync then
+            syncPosition()
+        end
+        layout()
+    end)
+
+    local updateElapsed = 0
+    frame:HookScript("OnUpdate", function(_, elapsed)
+        updateElapsed = updateElapsed + elapsed
+        if updateElapsed < 0.2 then
+            return
+        end
+        updateElapsed = 0
+        for index = #entries, 1, -1 do
+            if entries[index] then
+                updateEntry(entries[index])
+            end
+        end
+    end)
+
+    local slashHandler = SlashCmdList.HUNTERRANGEBAR
+    SlashCmdList.HUNTERRANGEBAR = function(message)
+        local command = string.lower(message or ""):gsub("^%s+", ""):gsub("%s+$", "")
+        if command == "seznam" or command == "list" then
+            for index = #entries, 1, -1 do
+                dropEntry(entries[index])
+            end
+            print("Seznam targetů byl vyčištěn.")
+            return
+        end
+        slashHandler(message)
+    end
+end

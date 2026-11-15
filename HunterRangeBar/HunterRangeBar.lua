@@ -9,6 +9,9 @@ local strings = {
         height = "Výška (tloušťka pruhu)", x = "Pozice X (od středu obrazovky)",
         y = "Pozice Y (od středu obrazovky)", lock = "Zamknout pozici (nejde přetahovat myší)",
         reset = "Výchozí hodnoty", close = "Zavřít", language = "Jazyk",
+        targetingOff = "Vypnout targetovací část",
+        stackIconsOff = "Vypnout ikony schopností pod pruhem",
+        targetingCombat = "Targetovací část lze přepnout pouze mimo boj.",
         noTarget = "Bez cíle", melee = "NA BLÍZKO", dead = "MRTVÁ ZÓNA",
         inRange = "V DOSAHU", outOfRange = "MIMO DOSAHU", unknown = "DOSAH NEZJIŠTĚN",
         missing = "Chybí %.1f yd", missingEstimate = "Chybí ~%.0f yd",
@@ -33,6 +36,9 @@ local strings = {
         height = "Height (bar thickness)", x = "X position (from screen center)",
         y = "Y position (from screen center)", lock = "Lock position (disable dragging)",
         reset = "Defaults", close = "Close", language = "Language",
+        targetingOff = "Disable targeting section",
+        stackIconsOff = "Hide ability icons below the bar",
+        targetingCombat = "The targeting section can only be toggled out of combat.",
         noTarget = "No target", melee = "MELEE RANGE", dead = "DEAD ZONE",
         inRange = "IN RANGE", outOfRange = "OUT OF RANGE", unknown = "RANGE UNKNOWN",
         missing = "%.1f yd to range", missingEstimate = "~%.0f yd to range",
@@ -58,6 +64,30 @@ local function L(key)
     local language = HunterRangeBarDB and HunterRangeBarDB.language
     return strings[language == "en" and "en" or "cs"][key]
 end
+
+local function safeUnitName(unit, fallback)
+    local name = UnitName(unit)
+    local secret = type(issecretvalue) == "function" and issecretvalue(name)
+    if type(name) == "string" and not secret and name ~= "" then
+        return name
+    end
+
+    if unit == "target" then
+        local frameName = _G.TargetFrameTextureFrameName
+        if frameName and frameName.GetText then
+            local shown = frameName:GetText()
+            if type(shown) == "string" and shown ~= "" then
+                return shown
+            end
+        end
+    end
+
+    return fallback or "?"
+end
+
+safeUpdateBar = nil
+
+cooldownIconsUpdateDisabled = false
 
 local FONT_PATH = "Interface\\AddOns\\HunterRangeBar\\Lato-Regular.ttf"
 local function applyAddonFont(fontString)
@@ -181,6 +211,16 @@ infoLabel:SetJustifyH("RIGHT")
 -- Texts are built as "Name  |  distance  |  status": the name goes left, the rest right (like the swing timer).
 local label = {}
 function label:SetText(text)
+    if type(text) ~= "string" then
+        nameLabel:SetText("")
+        infoLabel:SetText("")
+        return
+    end
+    if type(issecretvalue) == "function" and issecretvalue(text) then
+        nameLabel:SetText("?")
+        infoLabel:SetText("")
+        return
+    end
     local name, rest = string.match(text, "^(.-)  |  (.*)$")
     nameLabel:SetText(name or text)
     infoLabel:SetText(rest or "")
@@ -466,13 +506,28 @@ local function releaseIcon(spellID)
     end
 end
 
--- Column right of the bar: every used cooldown ability stacks upwards, shows its cooldown and
--- turns green with a flash once it is usable again (it stays green until it is used again).
-local STACK_ICON_SIZE = 26
+-- Vertical column below the bar (left side): every used cooldown ability stacks downwards,
+-- shows its cooldown and turns green with a flash once it is usable again.
+local STACK_ICON_SIZE = 39
 local STACK_SPACING = 3
 local STACK_FLASH_DURATION = 0.6
 local stackEntries = {}
 local stackOrder = {}
+
+local function stackIconsDisabled()
+    return HunterRangeBarDB and HunterRangeBarDB.stackIconsDisabled == true
+end
+
+local function applyStackVisibility()
+    local visible = not stackIconsDisabled()
+    for _, entry in ipairs(stackOrder) do
+        if visible then
+            entry:Show()
+        else
+            entry:Hide()
+        end
+    end
+end
 
 -- Only offensive abilities go into the column. Matched by name (all ranks); spells the client reports as
 -- harmful are accepted too, so new or renamed attacks still show up.
@@ -484,6 +539,17 @@ local OFFENSIVE_SPELLS = {
     ["Carve"] = true, ["Wing Clip"] = true,
     ["Explosive Trap"] = true, ["Immolation Trap"] = true, ["Freezing Trap"] = true, ["Frost Trap"] = true,
     ["Snake Trap"] = true,
+}
+
+-- Some abilities share one cooldown and should mirror it in the right column.
+local SHARED_COOLDOWN_SPELLS = {
+    ["Aimed Shot"] = { "Multi-Shot" },
+    ["Multi-Shot"] = { "Aimed Shot" },
+}
+
+local SHARED_COOLDOWN_ICON_SPELL_IDS = {
+    ["Aimed Shot"] = 19434,
+    ["Multi-Shot"] = 2643,
 }
 
 local function isOffensiveSpell(spellID)
@@ -500,14 +566,199 @@ local function isOffensiveSpell(spellID)
     return false
 end
 
--- The column sits above the right end of the bar; travelling icons stop short of it so they don't overlap.
-iconLane:SetPoint("BOTTOMRIGHT", frame, "TOPRIGHT", -(STACK_ICON_SIZE + 6), 2)
+-- The column is no longer on the right, so the travelling lane can use full bar width.
+iconLane:SetPoint("BOTTOMRIGHT", frame, "TOPRIGHT", 0, 2)
 
 local function layoutStack()
     for index, entry in ipairs(stackOrder) do
         entry:ClearAllPoints()
-        entry:SetPoint("BOTTOMRIGHT", frame, "TOPRIGHT", 0, 4 + (index - 1) * (STACK_ICON_SIZE + STACK_SPACING))
+        entry:SetPoint("TOPLEFT", frame, "BOTTOMLEFT", (index - 1) * (STACK_ICON_SIZE + STACK_SPACING), -6)
     end
+end
+
+function compactBindingText(text)
+    if type(text) ~= "string" then
+        return ""
+    end
+    text = text:gsub("ALT%-", "A-")
+        :gsub("CTRL%-", "C-")
+        :gsub("SHIFT%-", "S-")
+        :gsub("NUMPAD", "N")
+        :gsub("MOUSEWHEELUP", "MWU")
+        :gsub("MOUSEWHEELDOWN", "MWD")
+        :gsub("BUTTON", "M")
+        :gsub("SPACE", "SP")
+    return text
+end
+
+local function findStackEntryHotkeyText(spellID)
+    if type(spellID) == "number" then
+        return findSpellBindingText(spellID)
+    end
+    if type(spellID) == "string" then
+        local sharedName = spellID:match("^shared:(.+)$")
+        if sharedName then
+            local sharedSpellID = SHARED_COOLDOWN_ICON_SPELL_IDS[sharedName]
+            if type(sharedSpellID) == "number" then
+                return findSpellBindingText(sharedSpellID)
+            end
+        end
+    end
+    return ""
+end
+
+function bindingScore(binding)
+    if type(binding) ~= "string" or binding == "" then
+        return -1
+    end
+    if binding:match("^[A-Z]$") then
+        return 5
+    end
+    if binding:find("%-") then
+        return 4
+    end
+    if binding:match("^F%d+$") then
+        return 3
+    end
+    if binding:match("^%d$") then
+        return 1
+    end
+    return 2
+end
+
+function findBindingForActionSlot(slot)
+    if type(slot) ~= "number" or type(GetBindingKey) ~= "function" then
+        return nil
+    end
+
+    local command
+    if slot >= 1 and slot <= 24 then
+        command = "ACTIONBUTTON" .. (((slot - 1) % 12) + 1)
+    elseif slot >= 25 and slot <= 36 then
+        command = "MULTIACTIONBAR3BUTTON" .. (slot - 24)
+    elseif slot >= 37 and slot <= 48 then
+        command = "MULTIACTIONBAR4BUTTON" .. (slot - 36)
+    elseif slot >= 49 and slot <= 60 then
+        command = "MULTIACTIONBAR2BUTTON" .. (slot - 48)
+    elseif slot >= 61 and slot <= 72 then
+        command = "MULTIACTIONBAR1BUTTON" .. (slot - 60)
+    elseif slot >= 73 and slot <= 84 then
+        command = "BONUSACTIONBUTTON" .. (slot - 72)
+    end
+
+    if not command then
+        return nil
+    end
+
+    local key1, key2 = GetBindingKey(command)
+    local compact1, compact2 = compactBindingText(key1), compactBindingText(key2)
+    if bindingScore(compact1) >= bindingScore(compact2) then
+        return compact1 ~= "" and compact1 or nil
+    end
+    return compact2 ~= "" and compact2 or nil
+end
+
+function actionSlotMatchesSpell(slot, spellID, name)
+    if type(slot) ~= "number" or type(GetActionInfo) ~= "function" then
+        return false
+    end
+    local actionType, id = GetActionInfo(slot)
+    if actionType == "spell" then
+        if id == spellID then
+            return true
+        end
+        if name and type(id) == "number" and spellName(id) == name then
+            return true
+        end
+    elseif actionType == "macro" and name and type(GetMacroSpell) == "function" then
+        local macroSpellName = GetMacroSpell(id)
+        if type(macroSpellName) == "string" and macroSpellName == name then
+            return true
+        end
+    end
+
+    return false
+end
+
+function findVisibleButtonHotkeyForSpell(spellID, name)
+    local buttonPrefixes = {
+        "ActionButton",
+        "MultiBarBottomLeftButton",
+        "MultiBarBottomRightButton",
+        "MultiBarRightButton",
+        "MultiBarLeftButton",
+        "BonusActionButton",
+    }
+
+    for _, prefix in ipairs(buttonPrefixes) do
+        for index = 1, 12 do
+            local buttonName = prefix .. index
+            local button = _G[buttonName]
+            if button and button.IsShown and button:IsShown() then
+                local slot
+                if type(ActionButton_CalculateAction) == "function" then
+                    local ok, calculated = pcall(ActionButton_CalculateAction, button)
+                    if ok and type(calculated) == "number" then
+                        slot = calculated
+                    end
+                end
+                if type(slot) ~= "number" then
+                    slot = button.action or (button.GetAttribute and button:GetAttribute("action"))
+                end
+
+                if actionSlotMatchesSpell(slot, spellID, name) then
+                    local hotkey = (button.HotKey and button.HotKey.GetText and button.HotKey:GetText())
+                        or (_G[buttonName .. "HotKey"] and _G[buttonName .. "HotKey"].GetText and _G[buttonName .. "HotKey"]:GetText())
+                    local compact = compactBindingText(hotkey)
+                    if compact ~= "" then
+                        return compact
+                    end
+                end
+            end
+        end
+    end
+end
+
+function findSpellBindingText(spellID)
+    if type(spellID) ~= "number" or type(GetBindingKey) ~= "function" then
+        return ""
+    end
+
+    local name = spellName(spellID)
+    local okVisible, visibleButtonHotkey = pcall(findVisibleButtonHotkeyForSpell, spellID, name)
+    if okVisible and visibleButtonHotkey and visibleButtonHotkey ~= "" then
+        return visibleButtonHotkey
+    end
+
+    if name then
+        local key1, key2 = GetBindingKey("SPELL " .. name)
+        local compact1, compact2 = compactBindingText(key1), compactBindingText(key2)
+        if bindingScore(compact1) >= bindingScore(compact2) and compact1 ~= "" then
+            return compact1
+        elseif compact2 ~= "" then
+            return compact2
+        end
+    end
+
+    if type(GetActionInfo) == "function" then
+        local bestKey, bestScore = "", -1
+        for slot = 1, 120 do
+            if actionSlotMatchesSpell(slot, spellID, name) then
+                local key1 = findBindingForActionSlot(slot)
+                if key1 then
+                    local score = bindingScore(key1)
+                    if score > bestScore then
+                        bestScore = score
+                        bestKey = key1
+                    end
+                end
+            end
+        end
+        if bestKey ~= "" then
+            return bestKey
+        end
+    end
+    return ""
 end
 
 local function getStackEntry(spellID, texture)
@@ -532,6 +783,10 @@ local function getStackEntry(spellID, texture)
         entry.flash:SetAlpha(0)
         entry.timer = entry:CreateFontString(nil, "OVERLAY", "NumberFontNormalSmall")
         entry.timer:SetPoint("CENTER", entry, "CENTER", 0, 0)
+        entry.timer:SetTextColor(1, 1, 1, 1)
+        entry.hotkey = entry:CreateFontString(nil, "OVERLAY", "NumberFontNormalSmall")
+        entry.hotkey:SetPoint("TOPRIGHT", entry, "TOPRIGHT", -1, -1)
+        entry.hotkey:SetTextColor(0.92, 0.92, 0.92)
         -- Right click removes the icon from the column (it comes back the next time the ability is used).
         entry.spellID = spellID
         entry:EnableMouse(true)
@@ -557,10 +812,11 @@ local function getStackEntry(spellID, texture)
         layoutStack()
     end
     entry.texture:SetTexture(texture)
+    entry.hotkey:SetText(findStackEntryHotkeyText(spellID))
     return entry
 end
 
-local function setStackCooldown(spellID, texture)
+local function setStackCooldown(spellID, texture, startTime, duration)
     local entry = getStackEntry(spellID, texture)
     entry.ready = false
     entry.flashStart = nil
@@ -568,7 +824,12 @@ local function setStackCooldown(spellID, texture)
     entry.border:SetColorTexture(0.2, 0.2, 0.2, 1)
     entry.texture:SetDesaturated(true)
     entry.shade:Show()
-    entry:Show()
+    entry.timer:SetText("")
+    if stackIconsDisabled() then
+        entry:Hide()
+    else
+        entry:Show()
+    end
 end
 
 local function setStackReady(spellID)
@@ -584,10 +845,115 @@ local function setStackReady(spellID)
     entry.flashStart = GetTime()
 end
 
-local function setStackTimer(spellID, text)
+local function setStackTimer(spellID, remaining)
     local entry = stackEntries[spellID]
     if entry and not entry.ready then
-        entry.timer:SetText(text)
+        if type(remaining) ~= "number" then
+            return
+        end
+        if remaining ~= remaining then
+            return
+        end
+        if remaining < 0 then
+            remaining = 0
+        end
+        if remaining >= 10 then
+            entry.timer:SetText(string.format("%d", math.ceil(remaining)))
+        else
+            entry.timer:SetText(string.format("%.1f", remaining))
+        end
+        if remaining > 5 then
+            entry.timer:SetTextColor(1, 1, 1)
+        elseif remaining > 2 then
+            entry.timer:SetTextColor(1, 0.85, 0.2)
+        else
+            entry.timer:SetTextColor(1, 0.35, 0.2)
+        end
+    end
+end
+
+function removeStackEntryByKey(key)
+    local entry = stackEntries[key]
+    if not entry then
+        return
+    end
+    entry:Hide()
+    entry.flashStart = nil
+    stackEntries[key] = nil
+    for index, other in ipairs(stackOrder) do
+        if other == entry then
+            table.remove(stackOrder, index)
+            break
+        end
+    end
+    layoutStack()
+end
+
+function sharedStackKey(linkedName)
+    for key in pairs(stackEntries) do
+        if type(key) == "number" and spellName(key) == linkedName then
+            return key
+        end
+    end
+    return "shared:" .. linkedName
+end
+
+function sharedTexture(linkedName)
+    if type(GetSpellTexture) == "function" then
+        local texture = GetSpellTexture(linkedName)
+        if texture and not isSecret(texture) then
+            return texture
+        end
+    end
+    if type(GetSpellInfo) == "function" then
+        local _, _, icon = GetSpellInfo(linkedName)
+        if icon and not isSecret(icon) then
+            return icon
+        end
+    end
+    local iconSpellID = SHARED_COOLDOWN_ICON_SPELL_IDS[linkedName]
+    if iconSpellID then
+        local texture = spellIcon(iconSpellID)
+        if texture and not isSecret(texture) then
+            return texture
+        end
+    end
+    return nil
+end
+
+function setSharedStackCooldown(spellID, startTime, duration)
+    local sourceName = spellName(spellID)
+    local linkedNames = sourceName and SHARED_COOLDOWN_SPELLS[sourceName]
+    if not linkedNames then
+        return
+    end
+    for _, linkedName in ipairs(linkedNames) do
+        local texture = sharedTexture(linkedName)
+        if texture then
+            setStackCooldown(sharedStackKey(linkedName), texture, startTime, duration)
+        end
+    end
+end
+
+function setSharedStackReady(spellID)
+    local sourceName = spellName(spellID)
+    local linkedNames = sourceName and SHARED_COOLDOWN_SPELLS[sourceName]
+    if not linkedNames then
+        return
+    end
+    for _, linkedName in ipairs(linkedNames) do
+        setStackReady(sharedStackKey(linkedName))
+    end
+end
+
+function setSharedStackTimer(spellID, remaining)
+    local sourceName = spellName(spellID)
+    local linkedNames = sourceName and SHARED_COOLDOWN_SPELLS[sourceName]
+    if not linkedNames then
+        return
+    end
+    for _, linkedName in ipairs(linkedNames) do
+        setStackTimer(sharedStackKey(linkedName), remaining)
     end
 end
 
@@ -618,8 +984,13 @@ local function startCooldownIcon(spellID, startTime, duration, debuffName)
     if not texture then
         return
     end
+    local name = spellName(spellID)
+    if name then
+        removeStackEntryByKey("shared:" .. name)
+    end
     if debuffName or isOffensiveSpell(spellID) then
-        setStackCooldown(spellID, texture)
+        setStackCooldown(spellID, texture, startTime, duration)
+        setSharedStackCooldown(spellID, startTime, duration)
     end
 
     local icon = activeCooldownIcons[spellID]
@@ -799,6 +1170,7 @@ local function updateCooldownIcons()
             -- Handled above.
         elseif remaining <= 0.05 then
             setStackReady(spellID)
+            setSharedStackReady(spellID)
             if not icon.debuffName then
                 icon.flash:SetColorTexture(0.3, 1, 0.3, 1)
             else
@@ -819,7 +1191,8 @@ local function updateCooldownIcons()
                 or string.format("%.1f", remaining)
             icon.timer:SetText(timerText)
             icon.timer:SetTextColor(timerColor(remaining))
-            setStackTimer(spellID, remaining >= 10 and timerText or string.format("%d", math.ceil(remaining)))
+            setStackTimer(spellID, remaining)
+            setSharedStackTimer(spellID, remaining)
         end
     end
     layoutFloatingIcons(now)
@@ -874,6 +1247,11 @@ end
 
 local settingsFrame
 local refreshSettings = function() end
+local applyTargeting
+
+local function targetingDisabled()
+    return HunterRangeBarDB and HunterRangeBarDB.targetingDisabled == true
+end
 
 local function createFrameSafe(frameType, parent, template)
     if template then
@@ -954,7 +1332,7 @@ end
 
 local function createSettingsFrame()
     local panel, templated = createFrameSafe("Frame", UIParent, "BasicFrameTemplateWithInset")
-    panel:SetSize(340, 400)
+    panel:SetSize(340, 440)
     panel:SetPoint("CENTER", UIParent, "CENTER", 0, 120)
     panel:SetFrameStrata("DIALOG")
     panel:SetClampedToScreen(true)
@@ -1025,6 +1403,43 @@ local function createSettingsFrame()
     end)
     panel.lockCheck = lockCheck
 
+    local targetingCheck, targetingTemplated = createFrameSafe("CheckButton", panel, "UICheckButtonTemplate")
+    if not targetingTemplated then
+        targetingCheck:SetSize(24, 24)
+        targetingCheck:SetNormalTexture("Interface\\Buttons\\UI-CheckBox-Up")
+        targetingCheck:SetCheckedTexture("Interface\\Buttons\\UI-CheckBox-Check")
+    end
+    targetingCheck:SetPoint("TOPLEFT", panel, "TOPLEFT", 16, -310)
+    panel.targetingText = panel:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    applyAddonFont(panel.targetingText)
+    panel.targetingText:SetPoint("LEFT", targetingCheck, "RIGHT", 4, 0)
+    targetingCheck:SetScript("OnClick", function(self)
+        if InCombatLockdown and InCombatLockdown() then
+            print("Hunter Range Bar: " .. L("targetingCombat"))
+            refreshSettings()
+            return
+        end
+        db().targetingDisabled = self:GetChecked() and true or false
+        applyTargeting()
+    end)
+    panel.targetingCheck = targetingCheck
+
+    local stackIconsCheck, stackIconsTemplated = createFrameSafe("CheckButton", panel, "UICheckButtonTemplate")
+    if not stackIconsTemplated then
+        stackIconsCheck:SetSize(24, 24)
+        stackIconsCheck:SetNormalTexture("Interface\\Buttons\\UI-CheckBox-Up")
+        stackIconsCheck:SetCheckedTexture("Interface\\Buttons\\UI-CheckBox-Check")
+    end
+    stackIconsCheck:SetPoint("TOPLEFT", panel, "TOPLEFT", 16, -344)
+    panel.stackIconsText = panel:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    applyAddonFont(panel.stackIconsText)
+    panel.stackIconsText:SetPoint("LEFT", stackIconsCheck, "RIGHT", 4, 0)
+    stackIconsCheck:SetScript("OnClick", function(self)
+        db().stackIconsDisabled = self:GetChecked() and true or false
+        applyStackVisibility()
+    end)
+    panel.stackIconsCheck = stackIconsCheck
+
     local resetButton = createFrameSafe("Button", panel, "UIPanelButtonTemplate")
     resetButton:SetSize(140, 24)
     resetButton:SetPoint("BOTTOMLEFT", panel, "BOTTOMLEFT", 20, 20)
@@ -1081,6 +1496,10 @@ refreshSettings = function()
     settingsFrame.xRow.label:SetText(L("x"))
     settingsFrame.yRow.label:SetText(L("y"))
     settingsFrame.lockText:SetText(L("lock"))
+    settingsFrame.targetingText:SetText(L("targetingOff"))
+    settingsFrame.targetingCheck:SetChecked(targetingDisabled() == true)
+    settingsFrame.stackIconsText:SetText(L("stackIconsOff"))
+    settingsFrame.stackIconsCheck:SetChecked(stackIconsDisabled() == true)
     settingsFrame.resetButton:SetText(L("reset"))
     settingsFrame.closeButton:SetText(L("close"))
     settingsFrame.languageLabel:SetText(L("language"))
@@ -1399,7 +1818,7 @@ local function computeBar(elapsed)
 
     frame.hasTarget = true
 
-    local targetName = UnitName("target") or "Target"
+    local targetName = safeUnitName("target", "Target")
     local hostileTarget = UnitCanAttack and UnitCanAttack("player", "target")
     local distance = exactDistance() or positionDistance()
 
@@ -1528,6 +1947,28 @@ local function updateBar(elapsed)
     end
 end
 
+safeUpdateBar = function(elapsed)
+    local ok, err = pcall(updateBar, elapsed or 0)
+    if ok then
+        return
+    end
+    if not HunterRangeBarBarErrorShown then
+        HunterRangeBarBarErrorShown = true
+        print("HunterRangeBar updateBar error: " .. tostring(err))
+    end
+    frame:SetAlpha(1)
+    statusBar:SetStatusBarColor(0.25, 1, 0.3, 1)
+    if UnitExists("target") then
+        local targetName = safeUnitName("target", "?")
+        label:SetText(targetName .. "  |  ?")
+    else
+        label:SetText(L("noTarget"))
+    end
+    frame.targetProgress = 0
+    frame.displayedProgress = 0
+    statusBar:SetValue(0)
+end
+
 local function updateRangeFlash()
     if not frame.flashStart then
         rangeFlash:SetAlpha(0)
@@ -1600,12 +2041,12 @@ frame:SetScript("OnEvent", function(_, event, ...)
     end
     if event == "PLAYER_TARGET_CHANGED" then
         resetEstimator()
-        updateBar(0)
+        safeUpdateBar(0)
         frame.displayedProgress = frame.targetProgress or 0
         statusBar:SetValue(frame.displayedProgress)
         return
     end
-    updateBar(0)
+    safeUpdateBar(0)
 end)
 
 frame:SetScript("OnUpdate", function(self, elapsed)
@@ -1613,7 +2054,7 @@ frame:SetScript("OnUpdate", function(self, elapsed)
     if self.elapsed >= UPDATE_INTERVAL then
         local checkElapsed = self.elapsed
         self.elapsed = 0
-        updateBar(checkElapsed)
+        safeUpdateBar(checkElapsed)
     end
 
     local targetProgress = self.targetProgress or 0
@@ -1626,7 +2067,12 @@ frame:SetScript("OnUpdate", function(self, elapsed)
     self.displayedProgress = displayedProgress
     statusBar:SetValue(displayedProgress)
     updateRangeFlash()
-    updateCooldownIcons()
+    if not cooldownIconsUpdateDisabled then
+        local ok = pcall(updateCooldownIcons)
+        if not ok then
+            cooldownIconsUpdateDisabled = true
+        end
+    end
 end)
 
 SLASH_HUNTERRANGEBAR1 = "/hrb"
@@ -2493,7 +2939,7 @@ do
     end
 
     local function addCurrentTarget()
-        if inCombat() then
+        if targetingDisabled() or inCombat() then
             return
         end
         refreshMacros()
@@ -2545,6 +2991,9 @@ do
 
     local pendingSync = false
     local function syncPosition()
+        if targetingDisabled() then
+            return
+        end
         if inCombat() then
             pendingSync = true
             return
@@ -2564,13 +3013,42 @@ do
     frame:HookScript("OnDragStop", syncPosition)
 
     local events = CreateFrame("Frame")
-    events:RegisterEvent("PLAYER_ENTERING_WORLD")
-    events:RegisterEvent("PLAYER_REGEN_ENABLED")
-    events:RegisterEvent("PLAYER_REGEN_DISABLED")
-    events:RegisterEvent("NAME_PLATE_UNIT_ADDED")
-    events:RegisterEvent("NAME_PLATE_UNIT_REMOVED")
-    events:RegisterEvent("PLAYER_TARGET_CHANGED")
+    local pendingTargeting = false
+    applyTargeting = function()
+        if inCombat() then
+            pendingTargeting = true
+            events:RegisterEvent("PLAYER_REGEN_ENABLED")
+            return
+        end
+        pendingTargeting = false
+        events:UnregisterAllEvents()
+        events:RegisterEvent("PLAYER_ENTERING_WORLD")
+        if targetingDisabled() then
+            for _, entry in ipairs(entries) do
+                releaseRow(entry)
+            end
+            entries = {}
+            layout()
+            listTooltip:Hide()
+            list:Hide()
+        else
+            events:RegisterEvent("PLAYER_REGEN_ENABLED")
+            events:RegisterEvent("PLAYER_REGEN_DISABLED")
+            events:RegisterEvent("NAME_PLATE_UNIT_ADDED")
+            events:RegisterEvent("NAME_PLATE_UNIT_REMOVED")
+            events:RegisterEvent("PLAYER_TARGET_CHANGED")
+            list:Show()
+            syncPosition()
+            addCurrentTarget()
+        end
+    end
     events:SetScript("OnEvent", function(_, event, unit)
+        if event == "PLAYER_ENTERING_WORLD" or (event == "PLAYER_REGEN_ENABLED" and pendingTargeting) then
+            applyTargeting()
+        end
+        if targetingDisabled() then
+            return
+        end
         if event == "PLAYER_TARGET_CHANGED" then
             addCurrentTarget()
             return
@@ -2607,6 +3085,9 @@ do
 
     local updateElapsed = 0
     frame:HookScript("OnUpdate", function(_, elapsed)
+        if targetingDisabled() then
+            return
+        end
         updateClosingRows(GetTime())
         updateElapsed = updateElapsed + elapsed
         if updateElapsed < 0.2 then
@@ -2621,10 +3102,16 @@ do
         end
     end)
 
+    applyTargeting()
+
     local slashHandler = SlashCmdList.HUNTERRANGEBAR
     SlashCmdList.HUNTERRANGEBAR = function(message)
         local command = string.lower(message or ""):gsub("^%s+", ""):gsub("%s+$", "")
         if command == "seznam" or command == "list" then
+            if targetingDisabled() then
+                print("Hunter Range Bar: " .. L("targetingOff"))
+                return
+            end
             for index = #entries, 1, -1 do
                 dropEntry(entries[index])
             end

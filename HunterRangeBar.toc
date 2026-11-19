@@ -1,0 +1,7 @@
+## Interface: 16001
+## Title: Hunter Range Bar
+## Notes: Zobrazuje vzdálenost k targetu a progres k hranici 40 yd.
+## Version: 1.0.0
+## SavedVariables: HunterRangeBarDB
+
+HunterRangeBar.lua

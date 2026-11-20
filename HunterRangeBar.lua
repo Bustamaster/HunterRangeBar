@@ -333,7 +333,7 @@ rangeFlash:SetAlpha(0)
 local DEFAULT_ICON_SIZE = 39
 local MIN_ICON_SIZE, MAX_ICON_SIZE = 24, 80
 local upperIconSize, lowerIconSize = DEFAULT_ICON_SIZE, DEFAULT_ICON_SIZE
-local MIN_TRACKED_COOLDOWN = 1.6
+local MIN_TRACKED_COOLDOWN, MAX_TRACKED_COOLDOWN = 1.6, 300
 local IGNORED_SPELLS = {
     [75] = true, -- Auto Shot
 }
@@ -397,7 +397,56 @@ markIcon.texture:SetAllPoints(markIcon)
 markIcon.texture:SetTexCoord(0.08, 0.92, 0.08, 0.92)
 markIcon.timer = markIcon:CreateFontString(nil, "OVERLAY", "NumberFontNormal")
 markIcon.timer:SetPoint("BOTTOM", markIcon, "BOTTOM", 0, 2)
+markIcon.outline = CreateFrame("Frame", nil, markIcon)
+markIcon.outline:SetAllPoints(frame)
+markIcon.outline:SetFrameLevel(frame:GetFrameLevel() + 2)
+do
+    local top = markIcon.outline:CreateTexture(nil, "OVERLAY")
+    top:SetPoint("TOPLEFT", frame, "TOPLEFT", -5, 5)
+    top:SetPoint("TOPRIGHT", frame, "TOPRIGHT", 5, 5)
+    top:SetHeight(2)
+    top:SetColorTexture(1, 0.1, 0.1, 1)
+
+    local bottom = markIcon.outline:CreateTexture(nil, "OVERLAY")
+    bottom:SetPoint("BOTTOMLEFT", frame, "BOTTOMLEFT", -5, -5)
+    bottom:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", 5, -5)
+    bottom:SetHeight(2)
+    bottom:SetColorTexture(1, 0.1, 0.1, 1)
+
+    local left = markIcon.outline:CreateTexture(nil, "OVERLAY")
+    left:SetPoint("TOPLEFT", top, "TOPLEFT")
+    left:SetPoint("BOTTOMLEFT", bottom, "BOTTOMLEFT")
+    left:SetWidth(2)
+    left:SetColorTexture(1, 0.1, 0.1, 1)
+
+    local right = markIcon.outline:CreateTexture(nil, "OVERLAY")
+    right:SetPoint("TOPRIGHT", top, "TOPRIGHT")
+    right:SetPoint("BOTTOMRIGHT", bottom, "BOTTOMRIGHT")
+    right:SetWidth(2)
+    right:SetColorTexture(1, 0.1, 0.1, 1)
+end
 markIcon:Hide()
+markIcon.markCache = {}
+
+function markIcon:selectTarget(resetCache)
+    if resetCache then
+        self.markCache = {}
+    end
+    self.knownMark, self.expirationTime = nil, nil
+    self:Hide()
+
+    local guid = UnitGUID("target")
+    self.targetGUID = not isSecret(guid) and type(guid) == "string" and guid or nil
+    if self.targetGUID and InCombatLockdown and InCombatLockdown() then
+        local cached = self.markCache[self.targetGUID]
+        if cached and (not cached.expirationTime or cached.expirationTime > GetTime()) then
+            self.knownMark, self.expirationTime = true, cached.expirationTime
+            self.texture:SetTexture(cached.texture)
+        elseif cached then
+            self.markCache[self.targetGUID] = nil
+        end
+    end
+end
 
 -- Returns aura table for Hunter's Mark on the target (from any hunter), or nil.
 local function findTargetMark()
@@ -423,20 +472,39 @@ end
 
 local function updateMarkIcon()
     local aura = findTargetMark()
-    if not aura then
+    if aura then
+        markIcon.knownMark = true
+        local texture = aura.icon
+        if texture == nil or isSecret(texture) then
+            texture = C_Spell and C_Spell.GetSpellTexture and C_Spell.GetSpellTexture(MARK_SPELL_ID)
+        end
+        markIcon.texture:SetTexture(texture)
+
+        local expirationTime = aura.expirationTime
+        if not isSecret(expirationTime) and type(expirationTime) == "number" then
+            markIcon.expirationTime = expirationTime > 0 and expirationTime or nil
+        end
+        if markIcon.targetGUID then
+            markIcon.markCache[markIcon.targetGUID] = { expirationTime = markIcon.expirationTime, texture = texture }
+        end
+    elseif not (InCombatLockdown and InCombatLockdown() and markIcon.knownMark) then
+        if markIcon.targetGUID then
+            markIcon.markCache[markIcon.targetGUID] = nil
+        end
+        markIcon.knownMark, markIcon.expirationTime = nil, nil
         markIcon:Hide()
         return
     end
 
-    local texture = aura.icon
-    if texture == nil or isSecret(texture) then
-        texture = C_Spell and C_Spell.GetSpellTexture and C_Spell.GetSpellTexture(MARK_SPELL_ID)
+    local remaining = markIcon.expirationTime and (markIcon.expirationTime - GetTime()) or nil
+    if not aura and remaining and remaining <= 0 then
+        if markIcon.targetGUID then
+            markIcon.markCache[markIcon.targetGUID] = nil
+        end
+        markIcon.knownMark, markIcon.expirationTime = nil, nil
+        markIcon:Hide()
+        return
     end
-    markIcon.texture:SetTexture(texture)
-
-    local expirationTime = aura.expirationTime
-    local remaining = (type(expirationTime) == "number" and not isSecret(expirationTime) and expirationTime > 0)
-        and (expirationTime - GetTime()) or nil
     if remaining and remaining > 0 then
         markIcon.timer:SetText(remaining >= 60 and string.format("%dm", math.ceil(remaining / 60))
             or string.format("%d", math.ceil(remaining)))
@@ -1032,6 +1100,18 @@ local function clearStack()
 end
 
 local function startCooldownIcon(spellID, startTime, duration, debuffName)
+    if not debuffName and duration > MAX_TRACKED_COOLDOWN then
+        releaseIcon(spellID)
+        removeStackEntryByKey(spellID)
+        local name = spellName(spellID)
+        local linkedNames = name and SHARED_COOLDOWN_SPELLS[name]
+        if linkedNames then
+            for _, linkedName in ipairs(linkedNames) do
+                removeStackEntryByKey(sharedStackKey(linkedName))
+            end
+        end
+        return
+    end
     local texture = spellIcon(spellID)
     if not texture then
         return
@@ -1425,7 +1505,9 @@ local function updateCooldownIcons(targetChanged)
         else
             local startTime, duration = readSpellCooldown(spellID)
             if startTime then
-                if duration > MIN_TRACKED_COOLDOWN then
+                if duration > MAX_TRACKED_COOLDOWN then
+                    startCooldownIcon(spellID, startTime, duration)
+                elseif duration > MIN_TRACKED_COOLDOWN then
                     icon.startTime, icon.duration = startTime, duration
                 elseif now >= icon.startTime + MIN_TRACKED_COOLDOWN then
                     -- Only the GCD (or nothing) remains: the spell is usable again.
@@ -2386,6 +2468,9 @@ frame:RegisterEvent("PLAYER_REGEN_ENABLED")
 frame:RegisterUnitEvent("UNIT_SPELLCAST_SUCCEEDED", "player")
 frame:SetScript("OnEvent", function(_, event, ...)
     if event == "PLAYER_REGEN_DISABLED" or event == "PLAYER_REGEN_ENABLED" then
+        if event == "PLAYER_REGEN_ENABLED" then
+            markIcon.markCache = {}
+        end
         applyBarOpacity()
         return
     end
@@ -2423,6 +2508,9 @@ frame:SetScript("OnEvent", function(_, event, ...)
         applySize()
         applyIconSizes()
         cooldownAnnouncer.apply()
+    end
+    if event == "PLAYER_TARGET_CHANGED" or event == "PLAYER_ENTERING_WORLD" then
+        markIcon:selectTarget(event == "PLAYER_ENTERING_WORLD")
     end
     if event == "PLAYER_TARGET_CHANGED" then
         if not cooldownIconsUpdateDisabled then

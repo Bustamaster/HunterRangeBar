@@ -1,5 +1,9 @@
 # Hunter Range Bar
 
+Podpořit vývoj můžeš dobrovolným příspěvkem: [revolut.me/petrbjwvk](https://revolut.me/petrbjwvk).
+
+![QR kód pro příspěvek](donatePK.jpg)
+
 V menu `/hrm` checkbox **Vypnout targetovací část** skryje a vyčistí seznam cílů včetně tlačítek peta, značek a kostky a zastaví jeho sledování. Hlavní bar, Hunter's Mark i ikony cooldownů nad pruhem zůstávají zapnuté. Ikony schopností pod pruhem lze vypnout samostatným checkboxem; jejich cooldowny se při skrytí dál sledují. Volby se ukládají; vypnutí targetovací části lze přepnout pouze mimo boj. Po opětovném zapnutí se seznam začne plnit znovu.
 
 Jednoduchý addon pro WoW Forever. Zobrazuje jméno vybraného targetu a jeho vzdálenost v horizontálním pruhu.

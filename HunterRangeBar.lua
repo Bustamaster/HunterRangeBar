@@ -9,6 +9,14 @@ local strings = {
         height = "Výška (tloušťka pruhu)", x = "Pozice X (od středu obrazovky)",
         y = "Pozice Y (od středu obrazovky)", opacity = "Průhlednost pruhu mimo boj (%)",
         enemyOpacity = "Průhlednost s nepřátelským cílem mimo boj (%)",
+        upperIconSize = "Velikost ikon nad pruhem",
+        lowerIconSize = "Velikost ikon pod pruhem",
+        noticeTitle = "Oznámení po doběhnutí ikony",
+        noticeOff = "Vypnout oznámení",
+        noticeX = "Pozice X od středu obrazovky",
+        noticeY = "Pozice Y od horního okraje",
+        noticeSize = "Velikost písma",
+        noticeFade = "Doba vyblednutí (s)",
         lock = "Zamknout pozici (nejde přetahovat myší)",
         reset = "Výchozí hodnoty", close = "Zavřít", language = "Jazyk",
         targetingOff = "Vypnout targetovací část",
@@ -38,6 +46,14 @@ local strings = {
         height = "Height (bar thickness)", x = "X position (from screen center)",
         y = "Y position (from screen center)", opacity = "Bar opacity out of combat (%)",
         enemyOpacity = "Enemy target opacity out of combat (%)",
+        upperIconSize = "Icon size above the bar",
+        lowerIconSize = "Icon size below the bar",
+        noticeTitle = "Icon completion announcements",
+        noticeOff = "Disable announcements",
+        noticeX = "X offset from screen center",
+        noticeY = "Y offset from top edge",
+        noticeSize = "Font size",
+        noticeFade = "Fade duration (s)",
         lock = "Lock position (disable dragging)",
         reset = "Defaults", close = "Close", language = "Language",
         targetingOff = "Disable targeting section",
@@ -314,7 +330,9 @@ rangeFlash:SetColorTexture(0.7, 1, 0.7, 1)
 rangeFlash:SetBlendMode("ADD")
 rangeFlash:SetAlpha(0)
 
-local ICON_SIZE = 39
+local DEFAULT_ICON_SIZE = 39
+local MIN_ICON_SIZE, MAX_ICON_SIZE = 24, 80
+local upperIconSize, lowerIconSize = DEFAULT_ICON_SIZE, DEFAULT_ICON_SIZE
 local MIN_TRACKED_COOLDOWN = 1.6
 local IGNORED_SPELLS = {
     [75] = true, -- Auto Shot
@@ -331,7 +349,7 @@ local TRACKED_DEBUFFS = {
 local iconLane = CreateFrame("Frame", nil, frame)
 iconLane:SetPoint("BOTTOMLEFT", frame, "TOPLEFT", 0, 2)
 iconLane:SetPoint("BOTTOMRIGHT", frame, "TOPRIGHT", 0, 2)
-iconLane:SetHeight(ICON_SIZE)
+iconLane:SetHeight(upperIconSize)
 
 local activeCooldownIcons = {}
 local pendingCasts = {}
@@ -372,7 +390,7 @@ end
 local MARK_SPELL_ID = 1130 -- Hunter's Mark (rank 1); used for the name and icon of every rank.
 
 local markIcon = CreateFrame("Frame", nil, frame)
-markIcon:SetSize(ICON_SIZE, ICON_SIZE)
+markIcon:SetSize(DEFAULT_ICON_SIZE, DEFAULT_ICON_SIZE)
 markIcon:SetPoint("RIGHT", frame, "LEFT", -4, 0)
 markIcon.texture = markIcon:CreateTexture(nil, "ARTWORK")
 markIcon.texture:SetAllPoints(markIcon)
@@ -468,11 +486,12 @@ end
 local function acquireIcon()
     local icon = table.remove(iconPool)
     if icon then
+        icon:SetSize(upperIconSize, upperIconSize)
         return icon
     end
 
     icon = CreateFrame("Frame", nil, iconLane)
-    icon:SetSize(ICON_SIZE, ICON_SIZE)
+    icon:SetSize(upperIconSize, upperIconSize)
 
     icon.shadow = icon:CreateTexture(nil, "BACKGROUND", nil, -2)
     icon.shadow:SetPoint("TOPLEFT", icon, "TOPLEFT", -4, 4)
@@ -522,7 +541,7 @@ local function acquireIcon()
 end
 
 local ICON_FADE_IN = 0.2
-local ICON_FINISH_DURATION = 0.45
+local ICON_FINISH_DURATION = 0.6
 
 local function releaseIcon(spellID)
     local icon = activeCooldownIcons[spellID]
@@ -530,6 +549,7 @@ local function releaseIcon(spellID)
         icon:Hide()
         icon:SetAlpha(1)
         icon.flash:SetAlpha(0)
+        icon.shadow:SetColorTexture(0, 0, 0, 0.45)
         icon.finishAt = nil
         icon.laneX, icon.liftY, icon.layoutTime, icon.row = nil, nil, nil, nil
         if icon.cooldown and icon.cooldown.Clear then
@@ -540,9 +560,7 @@ local function releaseIcon(spellID)
     end
 end
 
--- Vertical column below the bar (left side): every used cooldown ability stacks downwards,
--- shows its cooldown and turns green with a flash once it is usable again.
-local STACK_ICON_SIZE = 39
+-- The ability row below the bar shows cooldowns and flashes when spells are usable again.
 local STACK_SPACING = 3
 local STACK_FLASH_DURATION = 0.6
 local stackEntries = {}
@@ -605,8 +623,9 @@ iconLane:SetPoint("BOTTOMRIGHT", frame, "TOPRIGHT", 0, 2)
 
 local function layoutStack()
     for index, entry in ipairs(stackOrder) do
+        entry:SetSize(lowerIconSize, lowerIconSize)
         entry:ClearAllPoints()
-        entry:SetPoint("TOPLEFT", frame, "BOTTOMLEFT", (index - 1) * (STACK_ICON_SIZE + STACK_SPACING), -6)
+        entry:SetPoint("TOPLEFT", frame, "BOTTOMLEFT", (index - 1) * (lowerIconSize + STACK_SPACING), -6)
     end
 end
 
@@ -799,7 +818,6 @@ local function getStackEntry(spellID, texture)
     local entry = stackEntries[spellID]
     if not entry then
         entry = CreateFrame("Frame", nil, frame)
-        entry:SetSize(STACK_ICON_SIZE, STACK_ICON_SIZE)
         entry.border = entry:CreateTexture(nil, "BACKGROUND")
         entry.border:SetPoint("TOPLEFT", entry, "TOPLEFT", -2, 2)
         entry.border:SetPoint("BOTTOMRIGHT", entry, "BOTTOMRIGHT", 2, -2)
@@ -1041,6 +1059,7 @@ local function startCooldownIcon(spellID, startTime, duration, debuffName)
     icon.finishAt = nil
     icon.sweepStart, icon.sweepDuration = nil, nil
     icon.flash:SetAlpha(0)
+    icon.shadow:SetColorTexture(0, 0, 0, 0.45)
     if debuffName then
         icon.border:SetColorTexture(0.9, 0.08, 0.08, 1)
     else
@@ -1099,12 +1118,12 @@ end
 -- Overlapping floating icons are lifted into rows; each row is only part of an icon higher so they stay compact.
 -- Rows are sticky so the layout stays calm: an icon keeps its row for its whole trip, only a genuine
 -- collision lifts the newer icon one row up, and icons never drop back down.
-local ROW_STEP = math.floor(ICON_SIZE * 0.825)
-local COLLISION_DISTANCE = ICON_SIZE - 6
 local LIFT_SPEED = 6
 local floatingOrder = {}
 
 local function layoutFloatingIcons(now)
+    local rowStep = math.floor(upperIconSize * 0.825)
+    local collisionDistance = upperIconSize - 6
     for index = #floatingOrder, 1, -1 do
         floatingOrder[index] = nil
     end
@@ -1129,7 +1148,7 @@ local function layoutFloatingIcons(now)
         while collides do
             collides = false
             for _, other in ipairs(placed) do
-                if other.row == row and math.abs(other.laneX - icon.laneX) < COLLISION_DISTANCE then
+                if other.row == row and math.abs(other.laneX - icon.laneX) < collisionDistance then
                     collides = true
                     row = row + 1
                     break
@@ -1139,7 +1158,7 @@ local function layoutFloatingIcons(now)
         icon.row = row
         table.insert(placed, icon)
 
-        local targetY = row * ROW_STEP
+        local targetY = row * rowStep
         local elapsed = math.min(0.1, math.max(0, now - (icon.layoutTime or now)))
         icon.layoutTime = now
         if icon.liftY == nil then
@@ -1161,22 +1180,222 @@ local function layoutFloatingIcons(now)
         icon.overlay:SetFrameLevel(icon:GetFrameLevel() + 5)
     end
 end
-local function updateCooldownIcons()
+
+local cooldownAnnouncer = (function()
+    local noticeDefaults = { noticeX = -438, noticeY = 427, noticeSize = 38, noticeFade = 3.5 }
+    local function noticeSetting(db, key)
+        local value = db[key]
+        return type(value) == "number" and value or noticeDefaults[key]
+    end
+
+    local duration, fontSize = noticeDefaults.noticeFade, noticeDefaults.noticeSize
+    local disabled = false
+    local notices, pool = {}, {}
+    local overlay = CreateFrame("Frame", nil, UIParent)
+    overlay:SetSize(1, 1)
+    overlay:SetFrameStrata("HIGH")
+    overlay:Hide()
+
+    local function layout()
+        for index, notice in ipairs(notices) do
+            notice:ClearAllPoints()
+            notice:SetPoint("TOP", overlay, "TOP", 0, -(index - 1) * (fontSize + 6) - 72 * notice.fadeProgress)
+        end
+    end
+
+    local function recycle(index)
+        local notice = table.remove(notices, index)
+        notice:Hide()
+        pool[#pool + 1] = notice
+    end
+
+    local ICON_GAP = 8
+    local function applyFont(notice)
+        notice.text:SetFont(STANDARD_TEXT_FONT or "Fonts\\FRIZQT__.TTF", fontSize, "OUTLINE")
+        notice.icon:SetSize(fontSize, fontSize)
+        local textWidth = tonumber(notice.text:GetStringWidth()) or 0
+        if notice.icon:IsShown() then
+            notice.text:SetPoint("LEFT", notice.icon, "RIGHT", ICON_GAP, 0)
+            notice:SetSize(fontSize + ICON_GAP + textWidth, fontSize)
+        else
+            notice.text:SetPoint("LEFT", notice, "LEFT", 0, 0)
+            notice:SetSize(math.max(1, textWidth), fontSize)
+        end
+    end
+
+    local function createNotice()
+        local notice = CreateFrame("Frame", nil, overlay)
+        notice.icon = notice:CreateTexture(nil, "ARTWORK")
+        notice.icon:SetPoint("LEFT", notice, "LEFT", 0, 0)
+        notice.icon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
+        notice.glow = notice:CreateTexture(nil, "BACKGROUND")
+        notice.glow:SetPoint("TOPLEFT", notice.icon, "TOPLEFT", -3, 3)
+        notice.glow:SetPoint("BOTTOMRIGHT", notice.icon, "BOTTOMRIGHT", 3, -3)
+        notice.flash = notice:CreateTexture(nil, "OVERLAY")
+        notice.flash:SetPoint("TOPLEFT", notice.icon, "TOPLEFT", -2, 2)
+        notice.flash:SetPoint("BOTTOMRIGHT", notice.icon, "BOTTOMRIGHT", 2, -2)
+        notice.flash:SetBlendMode("ADD")
+        notice.text = notice:CreateFontString(nil, "OVERLAY", "GameFontNormalHuge")
+        return notice
+    end
+
+    -- Two quick pulses like the bar and the travelling icon; the text brightens toward its flash colour.
+    local FLASH_DURATION = 0.6
+    local function updateFlash(notice, elapsed)
+        notice.flashTime = notice.flashTime + elapsed
+        local base, light = notice.baseColor, notice.flashColor
+        local pulse = 0
+        if notice.flashTime < FLASH_DURATION then
+            pulse = math.abs(math.sin(notice.flashTime / FLASH_DURATION * 2 * math.pi))
+        end
+        notice.flash:SetAlpha(0.95 * pulse)
+        notice.glow:SetAlpha(pulse)
+        notice.text:SetTextColor(base[1] + (light[1] - base[1]) * pulse,
+            base[2] + (light[2] - base[2]) * pulse,
+            base[3] + (light[3] - base[3]) * pulse, 1)
+    end
+
+    overlay:SetScript("OnUpdate", function(self, elapsed)
+        for index = #notices, 1, -1 do
+            local notice = notices[index]
+            local fadeElapsed = math.min(elapsed, math.max(0, notice.flashTime + elapsed - FLASH_DURATION))
+            updateFlash(notice, elapsed)
+            notice.fadeProgress = notice.fadeProgress + fadeElapsed / duration
+            if notice.fadeProgress >= 1 then
+                recycle(index)
+            else
+                notice:SetAlpha(1 - notice.fadeProgress)
+            end
+        end
+        if #notices == 0 then
+            self:Hide()
+        else
+            layout()
+        end
+    end)
+
+    local function announce(name, isDebuff, texture)
+        if disabled or not name or name == "" then
+            return
+        end
+        local notice = table.remove(pool) or createNotice()
+        notice.fadeProgress = 0
+        notice.isDebuff = isDebuff
+        notice.text:ClearAllPoints()
+        notice.text:SetText(name)
+        if texture and not isSecret(texture) then
+            notice.icon:SetTexture(texture)
+            notice.icon:Show()
+        else
+            notice.icon:Hide()
+        end
+        notice.flash:SetShown(notice.icon:IsShown())
+        notice.glow:SetShown(notice.icon:IsShown())
+        if isDebuff then
+            notice.baseColor, notice.flashColor = { 1, 0.18, 0.18 }, { 1, 0.65, 0.65 }
+            notice.flash:SetColorTexture(1, 0.5, 0.5, 1)
+            notice.glow:SetColorTexture(1, 0.2, 0.2, 0.9)
+        else
+            notice.baseColor, notice.flashColor = { 1, 0.9, 0.1 }, { 1, 1, 0.75 }
+            notice.flash:SetColorTexture(1, 1, 0.6, 1)
+            notice.glow:SetColorTexture(1, 0.85, 0.1, 0.9)
+        end
+        notice.flashTime = 0
+        updateFlash(notice, 0)
+        applyFont(notice)
+        notice:SetAlpha(1)
+        table.insert(notices, 1, notice)
+        layout()
+        notice:Show()
+        overlay:Show()
+    end
+
+    local function applySettings()
+        local db = HunterRangeBarDB or {}
+        disabled = db.noticeOff == true
+        duration = math.min(10, math.max(0.5, noticeSetting(db, "noticeFade")))
+        fontSize = math.min(72, math.max(16, noticeSetting(db, "noticeSize")))
+        overlay:ClearAllPoints()
+        overlay:SetPoint("TOP", UIParent, "TOP", noticeSetting(db, "noticeX"), -noticeSetting(db, "noticeY"))
+        if disabled then
+            for index = #notices, 1, -1 do
+                recycle(index)
+            end
+            overlay:Hide()
+        else
+            for _, notice in ipairs(notices) do
+                applyFont(notice)
+            end
+            layout()
+        end
+    end
+
+    local function clearDebuffs()
+        local removed = false
+        for index = #notices, 1, -1 do
+            if notices[index].isDebuff then
+                recycle(index)
+                removed = true
+            end
+        end
+        if #notices == 0 then
+            overlay:Hide()
+        elseif removed then
+            layout()
+        end
+    end
+
+    return { show = announce, apply = applySettings, clearDebuffs = clearDebuffs, defaults = noticeDefaults, get = noticeSetting }
+end)()
+
+local function updateCooldownIcons(targetChanged)
     local now = GetTime()
+    local exists = UnitExists("target")
+    local clearDebuffs = targetChanged or (not isSecret(exists) and not exists)
+    if not clearDebuffs then
+        local dead = UnitIsDeadOrGhost("target")
+        clearDebuffs = not isSecret(dead) and dead
+        if not clearDebuffs then
+            dead = UnitIsDead("target")
+            clearDebuffs = not isSecret(dead) and dead
+        end
+        if not clearDebuffs then
+            local health, maxHealth = UnitHealth("target"), UnitHealthMax("target")
+            clearDebuffs = not isSecret(health) and not isSecret(maxHealth)
+                and type(health) == "number" and type(maxHealth) == "number"
+                and maxHealth > 0 and health <= 0
+        end
+    end
+    if clearDebuffs then
+        for spellID in pairs(pendingCasts) do
+            local name = spellName(spellID)
+            if name and TRACKED_DEBUFFS[name] then
+                pendingCasts[spellID] = nil
+            end
+        end
+        cooldownAnnouncer.clearDebuffs()
+    end
     processPendingCasts(now)
 
-    local travelWidth = math.max(0, iconLane:GetWidth() - ICON_SIZE)
+    local travelWidth = math.max(0, iconLane:GetWidth() - upperIconSize)
     for spellID, icon in pairs(activeCooldownIcons) do
         local finishing = icon.finishAt ~= nil
-        if finishing then
+        if icon.debuffName and clearDebuffs then
+            setStackReady(spellID)
+            setSharedStackReady(spellID)
+            releaseIcon(spellID)
+        elseif finishing then
             -- Finished: flash at the left edge and fade out.
             local t = now - icon.finishAt
             if t >= ICON_FINISH_DURATION then
+                local debuffName = icon.debuffName
                 releaseIcon(spellID)
+                cooldownAnnouncer.show(debuffName or spellName(spellID), debuffName ~= nil, spellIcon(spellID))
             else
                 local fraction = t / ICON_FINISH_DURATION
-                icon.flash:SetAlpha(0.9 * math.sin(fraction * math.pi))
-                icon:SetAlpha(1 - fraction * fraction)
+                -- Two quick pulses like the range bar flash; the icon fades only at the very end.
+                icon.flash:SetAlpha(0.95 * math.abs(math.sin(fraction * 2 * math.pi)))
+                icon:SetAlpha(1 - fraction ^ 4)
             end
         elseif icon.debuffName then
             local startTime, duration = readTargetDebuff(icon.debuffName)
@@ -1200,15 +1419,17 @@ local function updateCooldownIcons()
         end
 
         local remaining = icon.startTime + icon.duration - now
-        if finishing then
+        if finishing or not activeCooldownIcons[spellID] then
             -- Handled above.
         elseif remaining <= 0.05 then
             setStackReady(spellID)
             setSharedStackReady(spellID)
             if not icon.debuffName then
-                icon.flash:SetColorTexture(0.3, 1, 0.3, 1)
+                icon.flash:SetColorTexture(0.7, 1, 0.7, 1)
+                icon.shadow:SetColorTexture(0.3, 1, 0.3, 0.9)
             else
-                icon.flash:SetColorTexture(1, 0.25, 0.2, 1)
+                icon.flash:SetColorTexture(1, 0.5, 0.5, 1)
+                icon.shadow:SetColorTexture(1, 0.2, 0.2, 0.9)
             end
             icon.finishAt = now
             icon.timer:SetText("")
@@ -1231,6 +1452,30 @@ local function updateCooldownIcons()
     end
     layoutFloatingIcons(now)
     updateStackFlashes(now)
+end
+
+local function applyIconSizes()
+    local db = HunterRangeBarDB or {}
+    local function readSize(value)
+        value = type(value) == "number" and value or DEFAULT_ICON_SIZE
+        return math.floor(math.min(MAX_ICON_SIZE, math.max(MIN_ICON_SIZE, value)) + 0.5)
+    end
+
+    local upper = readSize(db.upperIconSize)
+    if upper ~= upperIconSize then
+        upperIconSize = upper
+        iconLane:SetHeight(upper)
+        for _, icon in pairs(activeCooldownIcons) do
+            icon:SetSize(upper, upper)
+            icon.row, icon.liftY = nil, nil
+        end
+    end
+
+    local lower = readSize(db.lowerIconSize)
+    if lower ~= lowerIconSize then
+        lowerIconSize = lower
+        layoutStack()
+    end
 end
 
 local function onPlayerSpellCast(spellID)
@@ -1298,7 +1543,8 @@ local function createFrameSafe(frameType, parent, template)
 end
 
 -- Slider with a caption and an edit box for typing an exact value.
-local function createSettingRow(parent, caption, minValue, maxValue, top, onChange)
+local function createSettingRow(parent, caption, minValue, maxValue, top, onChange, step)
+    step = step or 1
     local row = {}
     row.label = parent:CreateFontString(nil, "OVERLAY", "GameFontNormal")
     applyAddonFont(row.label)
@@ -1310,7 +1556,7 @@ local function createSettingRow(parent, caption, minValue, maxValue, top, onChan
     slider:SetSize(200, 16)
     slider:SetPoint("TOPLEFT", parent, "TOPLEFT", 20, top - 20)
     slider:SetMinMaxValues(minValue, maxValue)
-    slider:SetValueStep(1)
+    slider:SetValueStep(step)
     if slider.SetObeyStepOnDrag then
         slider:SetObeyStepOnDrag(true)
     end
@@ -1322,7 +1568,7 @@ local function createSettingRow(parent, caption, minValue, maxValue, top, onChan
     slider:SetThumbTexture("Interface\\Buttons\\UI-SliderBar-Button-Horizontal")
     slider:EnableMouseWheel(true)
     slider:SetScript("OnMouseWheel", function(self, delta)
-        self:SetValue(self:GetValue() + delta)
+        self:SetValue(self:GetValue() + delta * step)
     end)
     row.slider = slider
 
@@ -1335,7 +1581,7 @@ local function createSettingRow(parent, caption, minValue, maxValue, top, onChan
     row.editBox = editBox
 
     local function setValue(value)
-        value = math.floor(math.min(maxValue, math.max(minValue, value)) + 0.5)
+        value = math.floor(math.min(maxValue, math.max(minValue, value)) / step + 0.5) * step
         row.updating = true
         slider:SetValue(value)
         editBox:SetText(tostring(value))
@@ -1366,7 +1612,7 @@ end
 
 local function createSettingsFrame()
     local panel, templated = createFrameSafe("Frame", UIParent, "BasicFrameTemplateWithInset")
-    panel:SetSize(340, 530)
+    panel:SetSize(660, 610)
     panel:SetPoint("CENTER", UIParent, "CENTER", 0, 120)
     panel:SetFrameStrata("DIALOG")
     panel:SetClampedToScreen(true)
@@ -1432,6 +1678,14 @@ local function createSettingsFrame()
         db().enemyOpacity = value
         applyBarOpacity()
     end)
+    panel.upperIconSizeRow = createSettingRow(panel, L("upperIconSize"), MIN_ICON_SIZE, MAX_ICON_SIZE, -328, function(value)
+        db().upperIconSize = value
+        applyIconSizes()
+    end)
+    panel.lowerIconSizeRow = createSettingRow(panel, L("lowerIconSize"), MIN_ICON_SIZE, MAX_ICON_SIZE, -370, function(value)
+        db().lowerIconSize = value
+        applyIconSizes()
+    end)
 
     local lockCheck, checkTemplated = createFrameSafe("CheckButton", panel, "UICheckButtonTemplate")
     if not checkTemplated then
@@ -1439,7 +1693,7 @@ local function createSettingsFrame()
         lockCheck:SetNormalTexture("Interface\\Buttons\\UI-CheckBox-Up")
         lockCheck:SetCheckedTexture("Interface\\Buttons\\UI-CheckBox-Check")
     end
-    lockCheck:SetPoint("TOPLEFT", panel, "TOPLEFT", 16, -336)
+    lockCheck:SetPoint("TOPLEFT", panel, "TOPLEFT", 16, -414)
     local lockText = panel:CreateFontString(nil, "OVERLAY", "GameFontNormal")
     applyAddonFont(lockText)
     lockText:SetPoint("LEFT", lockCheck, "RIGHT", 4, 0)
@@ -1455,7 +1709,7 @@ local function createSettingsFrame()
         targetingCheck:SetNormalTexture("Interface\\Buttons\\UI-CheckBox-Up")
         targetingCheck:SetCheckedTexture("Interface\\Buttons\\UI-CheckBox-Check")
     end
-    targetingCheck:SetPoint("TOPLEFT", panel, "TOPLEFT", 16, -410)
+    targetingCheck:SetPoint("TOPLEFT", panel, "TOPLEFT", 16, -488)
     panel.targetingText = panel:CreateFontString(nil, "OVERLAY", "GameFontNormal")
     applyAddonFont(panel.targetingText)
     panel.targetingText:SetPoint("LEFT", targetingCheck, "RIGHT", 4, 0)
@@ -1476,7 +1730,7 @@ local function createSettingsFrame()
         stackIconsCheck:SetNormalTexture("Interface\\Buttons\\UI-CheckBox-Up")
         stackIconsCheck:SetCheckedTexture("Interface\\Buttons\\UI-CheckBox-Check")
     end
-    stackIconsCheck:SetPoint("TOPLEFT", panel, "TOPLEFT", 16, -444)
+    stackIconsCheck:SetPoint("TOPLEFT", panel, "TOPLEFT", 16, -522)
     panel.stackIconsText = panel:CreateFontString(nil, "OVERLAY", "GameFontNormal")
     applyAddonFont(panel.stackIconsText)
     panel.stackIconsText:SetPoint("LEFT", stackIconsCheck, "RIGHT", 4, 0)
@@ -1495,7 +1749,14 @@ local function createSettingsFrame()
         local saved = db()
         saved.width, saved.height, saved.x, saved.y = nil, nil, 0, -180
         saved.opacity, saved.enemyOpacity = nil, nil
+        saved.upperIconSize, saved.lowerIconSize = nil, nil
+        saved.noticeOff = nil
+        for key in pairs(cooldownAnnouncer.defaults) do
+            saved[key] = nil
+        end
         applySize()
+        applyIconSizes()
+        cooldownAnnouncer.apply()
         applyBarOpacity()
         restorePosition()
         refreshSettings()
@@ -1510,7 +1771,7 @@ local function createSettingsFrame()
 
     local languageLabel = panel:CreateFontString(nil, "OVERLAY", "GameFontNormal")
     applyAddonFont(languageLabel)
-    languageLabel:SetPoint("TOPLEFT", panel, "TOPLEFT", 20, -374)
+    languageLabel:SetPoint("TOPLEFT", panel, "TOPLEFT", 20, -452)
     panel.languageLabel = languageLabel
 
     local dropdown = CreateFrame("DropdownButton", nil, panel, "WowStyle1DropdownTemplate")
@@ -1529,6 +1790,42 @@ local function createSettingsFrame()
     end)
     panel.languageDropdown = dropdown
 
+    local section = CreateFrame("Frame", nil, panel)
+    section:SetPoint("TOPLEFT", panel, "TOPLEFT", 340, -36)
+    section:SetSize(320, 300)
+    panel.noticeTitle = section:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+    applyAddonFont(panel.noticeTitle)
+    panel.noticeTitle:SetPoint("TOPLEFT", section, "TOPLEFT", 20, 0)
+
+    local noticeCheck, noticeTemplated = createFrameSafe("CheckButton", section, "UICheckButtonTemplate")
+    if not noticeTemplated then
+        noticeCheck:SetSize(24, 24)
+        noticeCheck:SetNormalTexture("Interface\\Buttons\\UI-CheckBox-Up")
+        noticeCheck:SetCheckedTexture("Interface\\Buttons\\UI-CheckBox-Check")
+    end
+    noticeCheck:SetPoint("TOPLEFT", section, "TOPLEFT", 16, -24)
+    panel.noticeCheck = noticeCheck
+    panel.noticeText = section:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    applyAddonFont(panel.noticeText)
+    panel.noticeText:SetPoint("LEFT", noticeCheck, "RIGHT", 4, 0)
+    noticeCheck:SetScript("OnClick", function(self)
+        db().noticeOff = self:GetChecked() and true or nil
+        cooldownAnnouncer.apply()
+    end)
+
+    local function noticeRow(key, minValue, maxValue, top, step)
+        return createSettingRow(section, L(key), minValue, maxValue, top, function(value)
+            db()[key] = value
+            cooldownAnnouncer.apply()
+        end, step)
+    end
+    panel.noticeRows = {
+        noticeX = noticeRow("noticeX", -halfWidth, halfWidth, -64),
+        noticeY = noticeRow("noticeY", 0, halfHeight * 2, -114),
+        noticeSize = noticeRow("noticeSize", 16, 72, -164),
+        noticeFade = noticeRow("noticeFade", 0.5, 10, -214, 0.5),
+    }
+
     panel:SetScript("OnShow", function() refreshSettings() end)
     return panel
 end
@@ -1545,6 +1842,8 @@ refreshSettings = function()
     settingsFrame.yRow.label:SetText(L("y"))
     settingsFrame.opacityRow.label:SetText(L("opacity"))
     settingsFrame.enemyOpacityRow.label:SetText(L("enemyOpacity"))
+    settingsFrame.upperIconSizeRow.label:SetText(L("upperIconSize"))
+    settingsFrame.lowerIconSizeRow.label:SetText(L("lowerIconSize"))
     settingsFrame.lockText:SetText(L("lock"))
     settingsFrame.targetingText:SetText(L("targetingOff"))
     settingsFrame.targetingCheck:SetChecked(targetingDisabled() == true)
@@ -1560,7 +1859,16 @@ refreshSettings = function()
     settingsFrame.yRow.setValue(db.y or -180)
     settingsFrame.opacityRow.setValue(db.opacity or 100)
     settingsFrame.enemyOpacityRow.setValue(db.enemyOpacity or db.opacity or 100)
+    settingsFrame.upperIconSizeRow.setValue(upperIconSize)
+    settingsFrame.lowerIconSizeRow.setValue(lowerIconSize)
     settingsFrame.lockCheck:SetChecked(db.locked == true)
+    settingsFrame.noticeTitle:SetText(L("noticeTitle"))
+    settingsFrame.noticeText:SetText(L("noticeOff"))
+    settingsFrame.noticeCheck:SetChecked(db.noticeOff == true)
+    for key, row in pairs(settingsFrame.noticeRows) do
+        row.label:SetText(L(key))
+        row.setValue(cooldownAnnouncer.get(db, key))
+    end
 end
 
 local function toggleSettings()
@@ -2097,8 +2405,17 @@ frame:SetScript("OnEvent", function(_, event, ...)
     end
     if event == "PLAYER_LOGIN" or event == "PLAYER_ENTERING_WORLD" then
         applySize()
+        applyIconSizes()
+        cooldownAnnouncer.apply()
     end
     if event == "PLAYER_TARGET_CHANGED" then
+        if not cooldownIconsUpdateDisabled then
+            local ok, err = pcall(updateCooldownIcons, true)
+            if not ok then
+                cooldownIconsUpdateDisabled = true
+                print("HunterRangeBar cooldown update error: " .. tostring(err))
+            end
+        end
         resetEstimator()
         safeUpdateBar(0)
         frame.displayedProgress = frame.targetProgress or 0
@@ -2127,9 +2444,10 @@ frame:SetScript("OnUpdate", function(self, elapsed)
     statusBar:SetValue(displayedProgress)
     updateRangeFlash()
     if not cooldownIconsUpdateDisabled then
-        local ok = pcall(updateCooldownIcons)
+        local ok, err = pcall(updateCooldownIcons)
         if not ok then
             cooldownIconsUpdateDisabled = true
+            print("HunterRangeBar cooldown update error: " .. tostring(err))
         end
     end
 end)

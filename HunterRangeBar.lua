@@ -428,11 +428,85 @@ end
 markIcon:Hide()
 markIcon.markCache = {}
 
+do
+    local aspectIcon = CreateFrame("Frame", nil, frame)
+    aspectIcon:SetSize(DEFAULT_ICON_SIZE, DEFAULT_ICON_SIZE)
+    aspectIcon:SetPoint("LEFT", frame, "RIGHT", 4, 0)
+    aspectIcon.texture = aspectIcon:CreateTexture(nil, "ARTWORK")
+    aspectIcon.texture:SetAllPoints(aspectIcon)
+    aspectIcon.texture:SetTexCoord(0.08, 0.92, 0.08, 0.92)
+    aspectIcon:Hide()
+    frame.aspectIcon = aspectIcon
+
+    local aspects = { 13165, 13163, 5118, 13159, 13161, 20043 }
+
+    function aspectIcon:refresh()
+        if not (C_UnitAuras and type(C_UnitAuras.GetAuraDataBySpellName) == "function") then
+            return
+        end
+        local complete = true
+        for _, id in ipairs(aspects) do
+            local name = spellName(id)
+            if name then
+                local ok, aura = pcall(C_UnitAuras.GetAuraDataBySpellName, "player", name, "HELPFUL|PLAYER")
+                if ok and not isSecret(aura) and type(aura) == "table" then
+                    self.aspectID = id
+                    local texture = aura.icon
+                    if isSecret(texture) or texture == nil then
+                        if C_Spell and type(C_Spell.GetSpellTexture) == "function" then
+                            texture = C_Spell.GetSpellTexture(id)
+                        elseif type(GetSpellTexture) == "function" then
+                            texture = GetSpellTexture(id)
+                        end
+                    end
+                    self.texture:SetTexture(texture)
+                    self:Show()
+                    return
+                elseif not ok or isSecret(aura) or aura ~= nil then
+                    complete = false
+                end
+            else
+                complete = false
+            end
+        end
+        if complete and not (InCombatLockdown and InCombatLockdown()) then
+            self.aspectID = nil
+            self:Hide()
+        end
+    end
+
+    function aspectIcon:recordCast(spellID)
+        if isSecret(spellID) or type(spellID) ~= "number" then
+            return
+        end
+        local name = spellName(spellID)
+        for _, id in ipairs(aspects) do
+            local aspectName = spellName(id)
+            if spellID == id or (name and aspectName and name == aspectName) then
+                if self.aspectID == id then
+                    self.aspectID = nil
+                    self:Hide()
+                else
+                    self.aspectID = id
+                    if C_Spell and type(C_Spell.GetSpellTexture) == "function" then
+                        self.texture:SetTexture(C_Spell.GetSpellTexture(id))
+                    elseif type(GetSpellTexture) == "function" then
+                        self.texture:SetTexture(GetSpellTexture(id))
+                    end
+                    self:Show()
+                end
+                self.refreshAt = GetTime() + 0.4
+                return
+            end
+        end
+    end
+end
+
 function markIcon:selectTarget(resetCache)
     if resetCache then
         self.markCache = {}
     end
-    self.knownMark, self.expirationTime = nil, nil
+    self.knownMark, self.expirationTime, self.inferred, self.estimatedTime = nil, nil, nil, nil
     self:Hide()
 
     local guid = UnitGUID("target")
@@ -440,12 +514,44 @@ function markIcon:selectTarget(resetCache)
     if self.targetGUID and InCombatLockdown and InCombatLockdown() then
         local cached = self.markCache[self.targetGUID]
         if cached and (not cached.expirationTime or cached.expirationTime > GetTime()) then
-            self.knownMark, self.expirationTime = true, cached.expirationTime
+            self.knownMark, self.expirationTime, self.inferred = true, cached.expirationTime, cached.inferred
+            self.estimatedTime = cached.estimatedTime
             self.texture:SetTexture(cached.texture)
         elseif cached then
             self.markCache[self.targetGUID] = nil
         end
     end
+end
+
+function markIcon:recordCast(spellID)
+    if isSecret(spellID) or type(spellID) ~= "number" then
+        return
+    end
+    local name, markName = spellName(spellID), spellName(MARK_SPELL_ID)
+    if spellID ~= MARK_SPELL_ID and (not name or not markName or name ~= markName) then
+        return
+    end
+
+    self.markCache = {}
+    self.knownMark, self.expirationTime, self.inferred, self.estimatedTime = nil, nil, nil, nil
+    self:Hide()
+    local exists = UnitExists("target")
+    if isSecret(exists) or not exists then
+        return
+    end
+    local texture
+    if C_Spell and type(C_Spell.GetSpellTexture) == "function" then
+        texture = C_Spell.GetSpellTexture(MARK_SPELL_ID)
+    elseif type(GetSpellTexture) == "function" then
+        texture = GetSpellTexture(MARK_SPELL_ID)
+    end
+    self.knownMark, self.expirationTime, self.inferred, self.estimatedTime = true, GetTime() + 120, true, true
+    self.texture:SetTexture(texture)
+    self.timer:SetText("~2m")
+    if self.targetGUID then
+        self.markCache[self.targetGUID] = { expirationTime = self.expirationTime, texture = texture, inferred = true, estimatedTime = true }
+    end
+    self:Show()
 end
 
 -- Returns aura table for Hunter's Mark on the target (from any hunter), or nil.
@@ -464,8 +570,12 @@ local function findTargetMark()
 
     if C_UnitAuras and type(C_UnitAuras.GetAuraDataBySpellName) == "function" then
         local ok, aura = pcall(C_UnitAuras.GetAuraDataBySpellName, "target", name, "HARMFUL")
-        if ok and type(aura) == "table" then
-            return aura
+        if ok and not isSecret(aura) then
+            if type(aura) == "table" then
+                return aura, true
+            elseif aura == nil then
+                return nil, true
+            end
         end
     end
 end
@@ -473,7 +583,7 @@ end
 local function updateMarkIcon()
     local aura = findTargetMark()
     if aura then
-        markIcon.knownMark = true
+        markIcon.knownMark, markIcon.inferred = true, nil
         local texture = aura.icon
         if texture == nil or isSecret(texture) then
             texture = C_Spell and C_Spell.GetSpellTexture and C_Spell.GetSpellTexture(MARK_SPELL_ID)
@@ -483,17 +593,23 @@ local function updateMarkIcon()
         local expirationTime = aura.expirationTime
         if not isSecret(expirationTime) and type(expirationTime) == "number" then
             markIcon.expirationTime = expirationTime > 0 and expirationTime or nil
+            markIcon.estimatedTime = nil
         end
         if markIcon.targetGUID then
-            markIcon.markCache[markIcon.targetGUID] = { expirationTime = markIcon.expirationTime, texture = texture }
+            markIcon.markCache[markIcon.targetGUID] = { expirationTime = markIcon.expirationTime, texture = texture, estimatedTime = markIcon.estimatedTime }
         end
-    elseif not (InCombatLockdown and InCombatLockdown() and markIcon.knownMark) then
-        if markIcon.targetGUID then
-            markIcon.markCache[markIcon.targetGUID] = nil
+    else
+        local inCombat = InCombatLockdown and InCombatLockdown()
+        local castGrace = markIcon.inferred and markIcon.expirationTime and GetTime() < markIcon.expirationTime - 119.5
+        -- A nil lookup in combat can mean the aura is hidden, even if it was previously readable.
+        if not (markIcon.knownMark and (inCombat or castGrace)) then
+            if markIcon.targetGUID then
+                markIcon.markCache[markIcon.targetGUID] = nil
+            end
+            markIcon.knownMark, markIcon.expirationTime, markIcon.inferred, markIcon.estimatedTime = nil, nil, nil, nil
+            markIcon:Hide()
+            return
         end
-        markIcon.knownMark, markIcon.expirationTime = nil, nil
-        markIcon:Hide()
-        return
     end
 
     local remaining = markIcon.expirationTime and (markIcon.expirationTime - GetTime()) or nil
@@ -501,13 +617,14 @@ local function updateMarkIcon()
         if markIcon.targetGUID then
             markIcon.markCache[markIcon.targetGUID] = nil
         end
-        markIcon.knownMark, markIcon.expirationTime = nil, nil
+        markIcon.knownMark, markIcon.expirationTime, markIcon.inferred, markIcon.estimatedTime = nil, nil, nil, nil
         markIcon:Hide()
         return
     end
     if remaining and remaining > 0 then
-        markIcon.timer:SetText(remaining >= 60 and string.format("%dm", math.ceil(remaining / 60))
-            or string.format("%d", math.ceil(remaining)))
+        local text = remaining >= 60 and string.format("%dm", math.ceil(remaining / 60))
+            or string.format("%d", math.ceil(remaining))
+        markIcon.timer:SetText((markIcon.estimatedTime and "~" or "") .. text)
     else
         markIcon.timer:SetText("")
     end
@@ -2466,16 +2583,26 @@ frame:RegisterEvent("PLAYER_TARGET_CHANGED")
 frame:RegisterEvent("PLAYER_REGEN_DISABLED")
 frame:RegisterEvent("PLAYER_REGEN_ENABLED")
 frame:RegisterUnitEvent("UNIT_SPELLCAST_SUCCEEDED", "player")
+frame:RegisterUnitEvent("UNIT_AURA", "player")
 frame:SetScript("OnEvent", function(_, event, ...)
+    if event == "UNIT_AURA" then
+        if not frame.aspectIcon.refreshAt then
+            frame.aspectIcon:refresh()
+        end
+        return
+    end
     if event == "PLAYER_REGEN_DISABLED" or event == "PLAYER_REGEN_ENABLED" then
         if event == "PLAYER_REGEN_ENABLED" then
             markIcon.markCache = {}
+            frame.aspectIcon:refresh()
         end
         applyBarOpacity()
         return
     end
     if event == "UNIT_SPELLCAST_SUCCEEDED" then
         local _, _, spellID = ...
+        markIcon:recordCast(spellID)
+        frame.aspectIcon:recordCast(spellID)
         onPlayerSpellCast(spellID)
         return
     end
@@ -2508,6 +2635,8 @@ frame:SetScript("OnEvent", function(_, event, ...)
         applySize()
         applyIconSizes()
         cooldownAnnouncer.apply()
+        frame.aspectIcon.refreshAt = nil
+        frame.aspectIcon:refresh()
     end
     if event == "PLAYER_TARGET_CHANGED" or event == "PLAYER_ENTERING_WORLD" then
         markIcon:selectTarget(event == "PLAYER_ENTERING_WORLD")
@@ -2530,6 +2659,10 @@ frame:SetScript("OnEvent", function(_, event, ...)
 end)
 
 frame:SetScript("OnUpdate", function(self, elapsed)
+    if self.aspectIcon.refreshAt and GetTime() >= self.aspectIcon.refreshAt then
+        self.aspectIcon.refreshAt = nil
+        self.aspectIcon:refresh()
+    end
     self.elapsed = (self.elapsed or 0) + elapsed
     if self.elapsed >= UPDATE_INTERVAL then
         local checkElapsed = self.elapsed

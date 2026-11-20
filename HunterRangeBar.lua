@@ -1210,9 +1210,18 @@ local cooldownAnnouncer = (function()
     end
 
     local ICON_GAP = 8
+    local NOTICE_FONT = STANDARD_TEXT_FONT or "Fonts\\FRIZQT__.TTF"
     local function applyFont(notice)
-        notice.text:SetFont(STANDARD_TEXT_FONT or "Fonts\\FRIZQT__.TTF", fontSize, "OUTLINE")
+        notice.text:SetFont(NOTICE_FONT, fontSize, "OUTLINE")
         notice.icon:SetSize(fontSize, fontSize)
+        if notice.hotkey:IsShown() then
+            local keySize = math.floor(fontSize * 0.4)
+            notice.hotkey:SetFont(NOTICE_FONT, keySize, "OUTLINE")
+            local keyWidth = notice.hotkey:GetStringWidth()
+            if keyWidth > fontSize - 4 then
+                notice.hotkey:SetFont(NOTICE_FONT, math.max(1, math.floor(keySize * (fontSize - 4) / keyWidth)), "OUTLINE")
+            end
+        end
         local textWidth = tonumber(notice.text:GetStringWidth()) or 0
         if notice.icon:IsShown() then
             notice.text:SetPoint("LEFT", notice.icon, "RIGHT", ICON_GAP, 0)
@@ -1235,6 +1244,9 @@ local cooldownAnnouncer = (function()
         notice.flash:SetPoint("TOPLEFT", notice.icon, "TOPLEFT", -2, 2)
         notice.flash:SetPoint("BOTTOMRIGHT", notice.icon, "BOTTOMRIGHT", 2, -2)
         notice.flash:SetBlendMode("ADD")
+        notice.hotkey = notice:CreateFontString(nil, "OVERLAY", "NumberFontNormalSmall", 1)
+        notice.hotkey:SetPoint("TOPRIGHT", notice.icon, "TOPRIGHT", -2, -2)
+        notice.hotkey:SetTextColor(0.92, 0.92, 0.92)
         notice.text = notice:CreateFontString(nil, "OVERLAY", "GameFontNormalHuge")
         return notice
     end
@@ -1274,7 +1286,7 @@ local cooldownAnnouncer = (function()
         end
     end)
 
-    local function announce(name, isDebuff, texture)
+    local function announce(name, isDebuff, texture, spellID)
         if disabled or not name or name == "" then
             return
         end
@@ -1289,6 +1301,10 @@ local cooldownAnnouncer = (function()
         else
             notice.icon:Hide()
         end
+        local hotkey = notice.icon:IsShown() and findSpellBindingText(spellID) or ""
+        local showHotkey = not isSecret(hotkey) and hotkey ~= ""
+        notice.hotkey:SetText(showHotkey and hotkey or "")
+        notice.hotkey:SetShown(showHotkey)
         notice.flash:SetShown(notice.icon:IsShown())
         notice.glow:SetShown(notice.icon:IsShown())
         if isDebuff then
@@ -1390,7 +1406,7 @@ local function updateCooldownIcons(targetChanged)
             if t >= ICON_FINISH_DURATION then
                 local debuffName = icon.debuffName
                 releaseIcon(spellID)
-                cooldownAnnouncer.show(debuffName or spellName(spellID), debuffName ~= nil, spellIcon(spellID))
+                cooldownAnnouncer.show(debuffName or spellName(spellID), debuffName ~= nil, spellIcon(spellID), spellID)
             else
                 local fraction = t / ICON_FINISH_DURATION
                 -- Two quick pulses like the range bar flash; the icon fades only at the very end.

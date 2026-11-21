@@ -33,7 +33,8 @@ local strings = {
         stackCleared = "Sloupec pouzitych schopnosti byl vycisten.",
         commands = "Prikazy: /hrm, /hrb lock, /hrb unlock, /hrb reset, /hrb debug, /hrb clear, /hrb seznam",
         listCombat = "Seznam targetu se vycisti po boji.", listClear = "Seznam targetu se vycisti za 0,5 s.",
-        openSettings = "Otevřít nastavení", secureError = "zabezpecene tlacitko cile se nepodarilo vytvorit: ",
+        openSettings = "Otevřít nastavení", minimapDrag = "Přetažením přesuneš ikonu kolem minimapy.",
+        secureError = "zabezpecene tlacitko cile se nepodarilo vytvorit: ",
         fontError = "nepodarilo se nacist font Lato-Regular.ttf.",
         debugSelect = "nejprve vyber target.", debugTarget = "diagnostika targetu ",
         debugNoApi = "UnitDistanceSquared: API neni dostupne", debugItem = "predmet",
@@ -70,7 +71,8 @@ local strings = {
         stackCleared = "Used abilities column cleared.",
         commands = "Commands: /hrm, /hrb lock, /hrb unlock, /hrb reset, /hrb debug, /hrb clear, /hrb list",
         listCombat = "Target list will be cleared after combat.", listClear = "Target list will be cleared in 0.5 seconds.",
-        openSettings = "Open settings", secureError = "could not create secure target button: ",
+        openSettings = "Open settings", minimapDrag = "Drag to move the icon around the minimap.",
+        secureError = "could not create secure target button: ",
         fontError = "could not load Lato-Regular.ttf.",
         debugSelect = "select a target first.", debugTarget = "target diagnostics ",
         debugNoApi = "UnitDistanceSquared: API unavailable", debugItem = "item",
@@ -2097,6 +2099,58 @@ local function toggleSettings()
         settingsFrame:Show()
         refreshSettings()
     end
+end
+
+do
+    local button = CreateFrame("Button", nil, Minimap)
+    button:SetSize(32, 32)
+    button:SetFrameStrata("MEDIUM")
+    button:SetFrameLevel(Minimap:GetFrameLevel() + 8)
+    button:RegisterForClicks("LeftButtonUp")
+    button:RegisterForDrag("LeftButton")
+    local icon = button:CreateTexture(nil, "BACKGROUND")
+    icon:SetSize(20, 20)
+    icon:SetPoint("CENTER")
+    icon:SetTexture("Interface\\AddOns\\HunterRangeBar\\AddonIcon")
+    local border = button:CreateTexture(nil, "OVERLAY")
+    border:SetSize(52, 52)
+    border:SetPoint("TOPLEFT")
+    border:SetTexture("Interface\\Minimap\\MiniMap-TrackingBorder")
+    button:SetHighlightTexture("Interface\\Minimap\\UI-Minimap-ZoomButton-Highlight")
+
+    local function position()
+        local angle = HunterRangeBarDB and HunterRangeBarDB.minimapAngle
+        if type(angle) ~= "number" then
+            angle = math.rad(225)
+        end
+        local radius = Minimap:GetWidth() / 2 + 5
+        button:ClearAllPoints()
+        button:SetPoint("CENTER", Minimap, "CENTER", radius * math.cos(angle), radius * math.sin(angle))
+    end
+    button:SetScript("OnClick", toggleSettings)
+    button:SetScript("OnEnter", function(self)
+        GameTooltip:SetOwner(self, "ANCHOR_LEFT")
+        GameTooltip:SetText("Hunter Range Bar")
+        GameTooltip:AddLine(L("openSettings"), 1, 1, 1)
+        GameTooltip:AddLine(L("minimapDrag"), 1, 1, 1, true)
+        GameTooltip:Show()
+    end)
+    button:SetScript("OnLeave", function() GameTooltip:Hide() end)
+    button:SetScript("OnDragStart", function(self)
+        self:SetScript("OnUpdate", function()
+            local x, y = GetCursorPosition()
+            local scale = Minimap:GetEffectiveScale()
+            local centerX, centerY = Minimap:GetCenter()
+            if centerX and centerY and scale > 0 then
+                HunterRangeBarDB = HunterRangeBarDB or {}
+                HunterRangeBarDB.minimapAngle = math.atan2(y / scale - centerY, x / scale - centerX)
+                position()
+            end
+        end)
+    end)
+    button:SetScript("OnDragStop", function(self) self:SetScript("OnUpdate", nil) end)
+    button:RegisterEvent("PLAYER_LOGIN")
+    button:SetScript("OnEvent", position)
 end
 
 local function exactDistance()
